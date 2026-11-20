@@ -1,0 +1,175 @@
+// !$*UTF8*$!
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 56;
+    objects = {
+
+/* Begin PBXBuildFile section */
+        100000000000000000000001 /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* AccountStore.swift */; };
+        100000000000000000000002 /* UsageAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* UsageAPI.swift */; };
+        100000000000000000000003 /* MonitorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* MonitorModel.swift */; };
+        100000000000000000000004 /* MonitorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* MonitorView.swift */; };
+        100000000000000000000005 /* CodexUsageMonitorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* CodexUsageMonitorApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+        200000000000000000000001 /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
+        200000000000000000000002 /* UsageAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageAPI.swift; sourceTree = "<group>"; };
+        200000000000000000000003 /* MonitorModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorModel.swift; sourceTree = "<group>"; };
+        200000000000000000000004 /* MonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitorView.swift; sourceTree = "<group>"; };
+        200000000000000000000005 /* CodexUsageMonitorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageMonitorApp.swift; sourceTree = "<group>"; };
+        200000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+        200000000000000000000007 /* CodexUsageMonitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexUsageMonitor.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+        300000000000000000000001 = {
+            isa = PBXGroup;
+            children = (
+                300000000000000000000002 /* CodexUsageMonitor */,
+                300000000000000000000003 /* Products */,
+            );
+            sourceTree = "<group>";
+        };
+        300000000000000000000002 /* CodexUsageMonitor */ = {
+            isa = PBXGroup;
+            children = (
+                200000000000000000000005 /* CodexUsageMonitorApp.swift */,
+                200000000000000000000004 /* MonitorView.swift */,
+                200000000000000000000003 /* MonitorModel.swift */,
+                200000000000000000000002 /* UsageAPI.swift */,
+                200000000000000000000001 /* AccountStore.swift */,
+                200000000000000000000006 /* Info.plist */,
+            );
+            path = CodexUsageMonitor;
+            sourceTree = "<group>";
+        };
+        300000000000000000000003 /* Products */ = {
+            isa = PBXGroup;
+            children = (200000000000000000000007 /* CodexUsageMonitor.app */);
+            name = Products;
+            sourceTree = "<group>";
+        };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+        400000000000000000000001 /* CodexUsageMonitor */ = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = 700000000000000000000002 /* Target configurations */;
+            buildPhases = (500000000000000000000001 /* Sources */);
+            buildRules = ();
+            dependencies = ();
+            name = CodexUsageMonitor;
+            productName = CodexUsageMonitor;
+            productReference = 200000000000000000000007 /* CodexUsageMonitor.app */;
+            productType = "com.apple.product-type.application";
+        };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+        400000000000000000000002 /* Project object */ = {
+            isa = PBXProject;
+            attributes = { LastUpgradeCheck = 1600; };
+            buildConfigurationList = 700000000000000000000001 /* Project configurations */;
+            compatibilityVersion = "Xcode 14.0";
+            developmentRegion = "zh-Hans";
+            hasScannedForEncodings = 0;
+            knownRegions = ("zh-Hans", Base);
+            mainGroup = 300000000000000000000001;
+            productRefGroup = 300000000000000000000003 /* Products */;
+            projectDirPath = "";
+            projectRoot = "";
+            targets = (400000000000000000000001 /* CodexUsageMonitor */);
+        };
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+        500000000000000000000001 /* Sources */ = {
+            isa = PBXSourcesBuildPhase;
+            buildActionMask = 2147483647;
+            files = (
+                100000000000000000000001 /* AccountStore.swift in Sources */,
+                100000000000000000000002 /* UsageAPI.swift in Sources */,
+                100000000000000000000003 /* MonitorModel.swift in Sources */,
+                100000000000000000000004 /* MonitorView.swift in Sources */,
+                100000000000000000000005 /* CodexUsageMonitorApp.swift in Sources */,
+            );
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+        600000000000000000000001 /* Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                DEBUG_INFORMATION_FORMAT = dwarf;
+                MACOSX_DEPLOYMENT_TARGET = 13.0;
+                ONLY_ACTIVE_ARCH = YES;
+                SDKROOT = macosx;
+                SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+                SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+                SWIFT_VERSION = 5.0;
+            };
+            name = Debug;
+        };
+        600000000000000000000002 /* Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+                MACOSX_DEPLOYMENT_TARGET = 13.0;
+                SDKROOT = macosx;
+                SWIFT_COMPILATION_MODE = wholemodule;
+                SWIFT_VERSION = 5.0;
+            };
+            name = Release;
+        };
+        600000000000000000000003 /* Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                CODE_SIGN_IDENTITY = "-";
+                CODE_SIGN_STYLE = Manual;
+                CURRENT_PROJECT_VERSION = 1;
+                GENERATE_INFOPLIST_FILE = NO;
+                INFOPLIST_FILE = CodexUsageMonitor/Info.plist;
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks");
+                MARKETING_VERSION = 0.1.0;
+                PRODUCT_BUNDLE_IDENTIFIER = com.hnbest.codex-usage-monitor;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+            };
+            name = Debug;
+        };
+        600000000000000000000004 /* Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                CODE_SIGN_IDENTITY = "-";
+                CODE_SIGN_STYLE = Manual;
+                CURRENT_PROJECT_VERSION = 1;
+                GENERATE_INFOPLIST_FILE = NO;
+                INFOPLIST_FILE = CodexUsageMonitor/Info.plist;
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks");
+                MARKETING_VERSION = 0.1.0;
+                PRODUCT_BUNDLE_IDENTIFIER = com.hnbest.codex-usage-monitor;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+            };
+            name = Release;
+        };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+        700000000000000000000001 /* Project configurations */ = {
+            isa = XCConfigurationList;
+            buildConfigurations = (600000000000000000000001 /* Debug */, 600000000000000000000002 /* Release */);
+            defaultConfigurationIsVisible = 0;
+            defaultConfigurationName = Release;
+        };
+        700000000000000000000002 /* Target configurations */ = {
+            isa = XCConfigurationList;
+            buildConfigurations = (600000000000000000000003 /* Debug */, 600000000000000000000004 /* Release */);
+            defaultConfigurationIsVisible = 0;
+            defaultConfigurationName = Release;
+        };
+/* End XCConfigurationList section */
+    };
+    rootObject = 400000000000000000000002 /* Project object */;
+}
