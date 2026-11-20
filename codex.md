@@ -106,3 +106,51 @@
 ### Git 首次入库校验
 
 - 新增 .gitattributes，为版本脚本参与哈希的 C# 源码和打包脚本保留原始换行符，避免克隆同一提交时因换行转换误增版本。
+
+## 2026-11-20 22:46:32
+- 用户需求：确认 Python 版内容和功能是否与 C# 版对齐。
+- 执行结果：基础额度监控、多账号管理、订阅时间、自动续期和重登恢复、采集频率、低额度通知、透明度及开机自启均有对应功能。Python 仍缺少重置卡明细与到期提醒、三档字号联动、任务栏常驻小窗、版本显示及版本化打包、切换后重启 Codex 桌面应用的入口。双环样式和重置卡入口也有差异。
+- 修改原因：记录本轮两套实现的源码对照结果。
+- 修改文件：codex.md。
+- 实现方法：检查 Python 和 C# 的额度数据解析、窗口与菜单、账号管理、运行路径和打包入口。
+- 验证结果：源码对照确认差异。本轮未启动两版进行实测，无业务代码及 Vue 或其引用 JS 改动。
+
+## 2026-11-20 22:51:08
+- 用户需求：了解如何把打包后的 EXE 放到 GitHub 供其他人下载。
+- 执行结果：提供当前仓库通过 GitHub Releases 上传 Windows EXE 和分享下载页的操作步骤。本轮仅说明流程。
+- 修改原因：按项目要求追加本轮对话记录。
+- 修改文件：codex.md。
+- 实现方法：核对 Git 远程、README、版本文件和现有产物，根据 GitHub 官方文档说明创建版本标签、添加附件及发布流程。
+- 验证结果：确认当前分支为 main，本地已有 csharp/dist/CodexUsageMonitor-0.0.1.exe，公开 Releases 页面当前没有发行版。未重新打包、上传或推送。
+
+## 2026-11-20 22:52:44
+- 用户需求：代为操作，将打包好的 Windows EXE 发布到 GitHub，支持使用命令。
+- 执行结果：在 hnbest/codex-usage-monitor 发布 v0.0.1，附件为 CodexUsageMonitor-0.0.1.exe。下载地址为 https://github.com/hnbest/codex-usage-monitor/releases/download/v0.0.1/CodexUsageMonitor-0.0.1.exe。
+- 修改原因：提供公开的 Windows 安装包下载入口并追加本轮记录。
+- 修改文件：codex.md。
+- 实现方法：通过 PowerShell 调用 GitHub REST API 创建草稿，将标签指向 19112a9，上传现有 EXE，核对附件摘要后正式发布并设为最新版。
+- 验证结果：未重新打包。公开 API 确认 v0.0.1 为最新版，匿名下载成功，文件大小 169984 字节，SHA-256 与本地 EXE 一致。
+
+## 2026-11-20 22:55:57
+- 用户需求：开始将 Python 版的内容和功能与 C# 版对齐。
+- 执行结果：Python 版新增重置卡详情和到期提醒、主窗口与两个弹窗三档字号联动、双环倒计时液位、任务栏常驻小窗、切换账号后重启 Codex 桌面应用入口，以及界面版本显示和版本化 EXE 打包。已生成独立计版的 Python 0.0.1。
+- 修改原因：补齐上一轮对照发现的功能差异，同时保留脚本入口和原有账号数据格式。
+- 修改文件：codex_tray.py、windows_ui.py、build_python.py、python-version.json、README.md、.gitignore、dist/CodexUsageMonitor-Python-0.0.1.exe、codex.md。
+- 实现方法：重置卡明细失败时保留用量汇总；通过 Tkinter 重排窗口并尊重 Windows 动画设置；用 Win32 定位任务栏和管理窗口层级；确认后只重启 Codex 桌面应用。PyInstaller 打包时嵌入版本和 Windows 文件属性，并按打包输入哈希递增末位。
+- 验证结果：Python 编译和 Git 差异检查通过。模拟验证重置卡解析、明细接口失败回退、窗口三档切换及恢复、多账号滚动、任务栏显隐、右键菜单版本和重启确认。实测 Python 0.0.1 EXE 已进入 Tk 事件循环，重复实例正常退出；重复打包沿用原版本，隔离副本改动后打包出 0.0.2。未实际重启 Codex 或验证真实账号重置卡。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 22:59:13
+- 用户需求：将 Python 版归拢到与 csharp 平级的 python 目录，账号资料不进入 Git 仓库。
+- 执行结果：Python 源码、依赖、启动器、打包脚本和版本记录已移入 python；原 0.0.1 EXE 已归档到 python/dist，新打包的 0.0.2 已在新目录启动。现有配置和账号仍从各自原有数据目录读取。
+- 修改原因：区分两个实现及各自构建产物，避免仓库收录账号和凭证。
+- 修改文件：迁移 python/codex_tray.py、python/windows_ui.py、python/build_python.py、python/python-version.json、python/requirements.txt、python/启动监控.vbs、python/dist/CodexUsageMonitor-Python-0.0.1.exe；新增 python/dist/CodexUsageMonitor-Python-0.0.2.exe；修改 README.md、.gitignore、codex.md。
+- 实现方法：更新 Python 的源码、同级图标和打包路径，保留原运行数据路径。Git 忽略 account、accounts、auth.json 和 Python 打包产物。
+- 验证结果：Python 语法、启动器、异目录导入、重复打包及新进程启动通过。Git 忽略规则适用于根目录和子目录，索引和本地可见历史均未发现账号凭证。C# 无改动，无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 22:59:34
+- 用户需求：提交并推送本轮 Python 功能对齐与目录迁移。
+- 执行结果：将 Python 平级目录、版本配置、账号忽略规则和说明整理为 main 分支提交。
+- 修改原因：把已验证的 Python 更新同步到 GitHub。
+- 修改文件：本次新增记录至 codex.md，提交范围见上一条迁移记录；EXE 为本地打包产物。
+- 实现方法：按路径暂存源码和文档，检查忽略规则与暂存内容，并推送 origin/main。
+- 验证结果：Python 语法检查、0.0.2 打包及 Git 差异检查通过，已核对暂存范围不含账号资料、运行配置、日志或 EXE。无 Vue 或其引用 JS 改动。

@@ -8,7 +8,9 @@ Codex Usage Monitor — 在任务栏托盘 + 浮动窗口显示 Codex 的 5 小�
 """
 
 import base64
+import http.client
 import json
+import math
 import os
 import re
 import shutil
@@ -20,19 +22,42 @@ import traceback
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
+
+import windows_ui
 
 # ----------------------------------------------------------------------------
 # 配置
 # ----------------------------------------------------------------------------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
-LOG_PATH = os.path.join(SCRIPT_DIR, "codex_tray.log")
-ACCOUNTS_DIR = os.path.join(SCRIPT_DIR, "accounts")   # 多账号快照目录
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def project_data_dir(script_dir):
+    if script_dir.name.lower() == "python" and (script_dir.parent / "csharp").is_dir():
+        return script_dir.parent
+    return script_dir
+
+
+DATA_DIR = project_data_dir(SCRIPT_DIR)
+if getattr(sys, "frozen", False):
+    exe_dir = Path(sys.executable).resolve().parent
+    if (exe_dir / "codex_tray.py").is_file():
+        DATA_DIR = project_data_dir(exe_dir)
+    elif (exe_dir / "accounts").is_dir():
+        DATA_DIR = exe_dir
+    else:
+        DATA_DIR = Path(os.environ["LOCALAPPDATA"]) / "CodexUsageMonitor"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
+LOG_PATH = os.path.join(DATA_DIR, "codex_tray.log")
+ACCOUNTS_DIR = os.path.join(DATA_DIR, "accounts")
 AUTOSTART_REG = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "CodexUsageTray"
 
 POLL_INTERVAL = 60          # 秒, 默认刷新间隔 (可在设置面板调整)
 API_USAGE = "https://chatgpt.com/backend-api/wham/usage"
+API_RESET_CREDITS = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 API_REFRESH = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"   # Codex CLI 官方 client_id
 
@@ -49,9 +74,14 @@ C_RED = "#ff5b5b"
 C_TRACK = "#3a3b44"
 
 ICON_FONT = r"C:\Windows\Fonts\arialbd.ttf"
+FONT_SCALES = {"small": 1.0, "medium": 1.2, "large": 1.4}
+USAGE_URL = "https://chatgpt.com/codex/settings/usage"
+def version_label():
+    state = _read_json(os.path.join(SCRIPT_DIR, "python-version.json"), {})
+    return "版本 " + state.get("version", "0.0.1")
 
 DEFAULT_CONFIG = {
-    "alpha": 0.60,           # 窗口整体透明度 0.4-1.0 (默认 60%)
+    "alpha": 0.80,           # 窗口整体透明度 0.4-1.0
     "interval": 60,          # 采集间隔秒 (默认 60s)
     "window_x": None,        # None = 右下角自动定位
     "window_y": None,
@@ -59,6 +89,8 @@ DEFAULT_CONFIG = {
     "view_mode": "single",   # single = 单账号双环详情 | all = 多账号总览
     "notify_low": True,      # 低额度时是否发送系统通知
     "notify_threshold": 20,  # 低额度提醒阈值 (%)
+    "show_in_taskbar": True,
+    "taskbar_offset_x": 0,
 }
 
 LOG_MAX_BYTES = 512 * 1024   # 日志最大 512KB, 超出后轮转到 .log.1
@@ -469,19 +501,82 @@ def refresh_token(auth, home=None):
     log("token 已续期: %s" % home)
 
 
+def _credit_timestamp(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        stamp = float(value)
+        if stamp > 1e12:
+            stamp /= 1000
+    except (ValueError, TypeError):
+        if not isinstance(value, str):
+            return None
+        try:
+            stamp = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+    return stamp if 0 < stamp < 253402300799 else None
+
+
+def _credit_count(value):
+    try:
+        return int(value) if value is not None and not isinstance(value, bool) else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _reset_credit_data(summary, extra, rate_limit, headers):
+    summary = summary if isinstance(summary, dict) else {}
+    extra = extra if isinstance(extra, dict) else {}
+    available = _credit_count(summary.get("available_count"))
+    cards = None
+    if available != 0:
+        try:
+            detail = http_json(API_RESET_CREDITS, headers=headers, timeout=5)
+            rows = detail.get("credits") if isinstance(detail, dict) else None
+            if isinstance(rows, list):
+                cards = [{
+                    "title": " ".join(str(row.get("title") or "重置卡").split()),
+                    "expires_at": _credit_timestamp(row.get("expires_at")),
+                } for row in rows if isinstance(row, dict) and str(row.get("status", "")).lower() == "available"]
+                cards.sort(key=lambda card: card["expires_at"] or math.inf)
+                detail_count = _credit_count(detail.get("available_count"))
+                if detail_count is not None:
+                    available = detail_count
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            log("读取重置卡明细失败: %s" % type(exc).__name__)
+
+    now = time.time()
+    expires_at = next((card["expires_at"] for card in cards or ()
+                       if (card["expires_at"] or 0) > now), None)
+    if expires_at is None:
+        for key in ("next_expiring_at", "earliest_expires_at", "expires_at", "expiration_timestamp", "expiry"):
+            expires_at = _credit_timestamp(summary.get(key))
+            if expires_at is not None:
+                break
+    return {
+        "credits": available,
+        "applicable_credits": _credit_count(summary.get("applicable_available_count")),
+        "reset_cards": cards,
+        "credits_expire_at": expires_at,
+        "credits_balance": "无限" if extra.get("unlimited") is True else extra.get("balance") or "0",
+        "limit_reached": rate_limit.get("limit_reached") is True,
+    }
+
+
 def fetch_usage(home=None):
     """返回指定账号的规范化数据 dict; 失败抛异常 (凭证失效抛 AuthError)"""
     auth = read_auth(home)
     if not auth or not auth.get("tokens", {}).get("access_token"):
         raise AuthError("没有登录凭证, 请重新登录该账号")
 
-    def call():
+    def usage_headers():
         tok = auth["tokens"]
-        return http_json(API_USAGE, headers={
+        return {
             "Authorization": "Bearer " + tok["access_token"],
             "chatgpt-account-id": tok.get("account_id", ""),
             "User-Agent": "codex-usage-tray/1.0",
-        })
+        }
 
     key = codex_home(home)
     cur_mtime = auth_mtime(home)
@@ -492,7 +587,7 @@ def fetch_usage(home=None):
     _AUTH_MTIME_SEEN[key] = cur_mtime
 
     try:
-        d = call()
+        d = http_json(API_USAGE, headers=usage_headers())
     except urllib.error.HTTPError as e:
         if e.code not in (401, 403):
             raise
@@ -510,7 +605,7 @@ def fetch_usage(home=None):
             _NO_REFRESH_UNTIL[key] = time.time() + 300
             raise AuthError("会话已失效, 需重新登录")
         try:
-            d = call()
+            d = http_json(API_USAGE, headers=usage_headers())
         except urllib.error.HTTPError as e2:
             if e2.code in (401, 403):
                 _NO_REFRESH_UNTIL[key] = time.time() + 300
@@ -521,7 +616,8 @@ def fetch_usage(home=None):
     rl = d.get("rate_limit") or {}
     pw = rl.get("primary_window") or {}
     sw = rl.get("secondary_window") or {}
-    credits = (d.get("rate_limit_reset_credits") or {}).get("available_count")
+    credit_data = _reset_credit_data(
+        d.get("rate_limit_reset_credits") or {}, d.get("credits") or {}, rl, usage_headers())
 
     # 订阅信息从 id_token 的 claim 里取 (含本期到期时间)
     sub_until = sub_start = None
@@ -554,7 +650,7 @@ def fetch_usage(home=None):
         "s_used": sw.get("used_percent"),
         "s_reset_at": sw.get("reset_at"),
         "s_left": sw.get("reset_after_seconds"),
-        "credits": credits,
+        **credit_data,
         "ts": time.time(),
     }
 
@@ -601,13 +697,23 @@ def fmt_reset_short(reset_at):
     return dt.strftime("%m/%d %H:%M")
 
 
-def render_ring_image(pct, color, size=88, scale=4, ring_width=8):
+@lru_cache(maxsize=16)
+def _ring_font(size):
+    from PIL import ImageFont
+    for path in (r"C:\Windows\Fonts\msyhbd.ttc", ICON_FONT):
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+def render_ring_image(pct, color, size=88, scale=4, ring_width=8, time_ratio=None, countdown="", phase=0):
     """抗锯齿环形进度图: 4x 超采样绘制后 LANCZOS 缩小
 
     pct: 剩余百分比 0-100, None 表示未知
     """
-    import math
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     S = size * scale
     w = ring_width * scale
@@ -619,6 +725,24 @@ def render_ring_image(pct, color, size=88, scale=4, ring_width=8):
     radius = (S - 2 * pad) / 2
     # PIL 的 arc/ellipse 描边贴着包围盒向内生长, 弧线中线半径 = radius - w/2
     r_mid = radius - w / 2
+
+    if time_ratio is not None:
+        inner = radius - w - scale
+        inner_box = (cx - inner, cy - inner, cx + inner, cy + inner)
+        mask = Image.new("L", (S, S))
+        ImageDraw.Draw(mask).ellipse(inner_box, fill=255)
+        liquid = Image.new("RGBA", (S, S), "#313944")
+        water = ImageDraw.Draw(liquid)
+        ratio = max(0, min(1, time_ratio))
+        level = cy + inner * (1 - 2 * ratio)
+        if ratio == 1:
+            water.rectangle((0, 0, S, S), fill="#52677f")
+        elif ratio > 0:
+            amplitude = 1.5 * scale * math.sin(math.pi * ratio)
+            wave = [(x, level + amplitude * math.sin(x / S * math.tau - phase))
+                    for x in range(0, S + 1, scale)]
+            water.polygon(wave + [(S, S), (0, S)], fill="#52677f")
+        img.paste(liquid, (0, 0), mask)
 
     # 轨道
     d.ellipse(box, outline=C_TRACK, width=int(w))
@@ -640,18 +764,11 @@ def render_ring_image(pct, color, size=88, scale=4, ring_width=8):
     # 中心百分比文字 (同样超采样绘制)
     txt = "?" if pct is None else "%d%%" % int(pct)
     fg = C_SUB if pct is None else color
-    font = None
-    for fp in (r"C:\Windows\Fonts\msyhbd.ttc", r"C:\Windows\Fonts\arialbd.ttf"):
-        try:
-            font = ImageFont.truetype(fp, int(15 * scale))
-            break
-        except Exception:
-            continue
-    if font is None:
-        font = ImageFont.load_default()
-    bbox = d.textbbox((0, 0), txt, font=font)
-    d.text((cx - (bbox[2] - bbox[0]) / 2 - bbox[0],
-            cy - (bbox[3] - bbox[1]) / 2 - bbox[1]), txt, font=font, fill=fg)
+    number_font = _ring_font(round(size * scale * 0.19))
+    d.text((cx, cy - (S * 0.10 if countdown else 0)), txt, font=number_font, fill=fg, anchor="mm")
+    if countdown:
+        d.text((cx, cy + S * 0.16), countdown, font=_ring_font(round(size * scale * 0.12)),
+               fill="#d8e7f9", anchor="mm")
 
     return img.resize((size, size), Image.LANCZOS)
 
@@ -790,8 +907,11 @@ def set_autostart(enable):
     import winreg
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG, 0, winreg.KEY_SET_VALUE) as k:
         if enable:
-            pyw = sys.executable.replace("python.exe", "pythonw.exe")
-            cmd = '"%s" "%s"' % (pyw, os.path.abspath(__file__))
+            if getattr(sys, "frozen", False):
+                cmd = subprocess.list2cmdline([sys.executable])
+            else:
+                pyw = Path(sys.executable).with_name("pythonw.exe")
+                cmd = subprocess.list2cmdline([str(pyw), os.path.abspath(__file__)])
             winreg.SetValueEx(k, AUTOSTART_NAME, 0, winreg.REG_SZ, cmd)
         else:
             try:
@@ -820,7 +940,14 @@ class App:
         self.card = None           # 单账号卡片控件引用
         self.overview_cards = {}   # home -> 多账号总览卡片控件引用
         self._lock = threading.Lock()
-        self._ring_photos = {}
+        self._ring_state = {}
+        self._wave_phase = 0
+        self._animate_rings = windows_ui.animate_windows()
+        self._restart_until = 0
+        self._restarting = False
+        self._taskbar_win = None
+        self._taskbar_quota = (None, None)
+        self._taskbar_setting = None
         self._stop_event = threading.Event()
         self._notified_low = {}    # (home, win_key) -> reset_at (去重低额度通知)
         self._live_auth_bad = False
@@ -841,7 +968,7 @@ class App:
         self.root.title("Codex 用量")
         self.root.overrideredirect(True)          # 无边框
         self.root.attributes("-topmost", True)    # 置顶
-        self.root.attributes("-alpha", float(self.cfg.get("alpha") or 0.6))
+        self.root.attributes("-alpha", float(self.cfg.get("alpha") or DEFAULT_CONFIG["alpha"]))
         self._build_window()
         log("启动: 窗口已构建 %s" % (self.root.geometry(),))
         self._round_corners()
@@ -861,9 +988,12 @@ class App:
                 MenuItem("设置…", lambda *_: self._run_ui(self._open_settings)),
                 MenuItem("立即刷新", lambda *_: self._run_ui(self._manual_refresh)),
                 MenuItem("复位窗口位置", lambda *_: self._run_ui(self._reset_position)),
-                MenuItem("开机自启", self._toggle_autostart, checked=lambda item: autostart_enabled()),
+                MenuItem("任务栏常驻显示", lambda *_: self._run_ui(self._toggle_taskbar),
+                         checked=lambda item: self.cfg["show_in_taskbar"]),
+                MenuItem("开机自启", lambda *_: self._run_ui(self._toggle_autostart), checked=lambda item: autostart_enabled()),
                 Menu.SEPARATOR,
                 MenuItem("退出", lambda *_: self._run_ui(self._quit)),
+                MenuItem(version_label(), None, enabled=False),
             ),
         )
         threading.Thread(target=self.tray.run, daemon=True).start()
@@ -875,6 +1005,9 @@ class App:
 
         self.root.protocol("WM_DELETE_WINDOW", lambda: self.toggle_window())
         self.root.after(100, self._apply_state)
+        self.root.after(100, self._refresh_taskbar)
+        self.root.after(100, self._animate)
+        self.root.after(1000, self._refresh_restart)
         log("启动: 进入 mainloop, 屏幕 %dx%d" % (self.root.winfo_screenwidth(), self.root.winfo_screenheight()))
         self.root.mainloop()
 
@@ -957,6 +1090,7 @@ class App:
 
         ok, msg = switch_cli_account(uid)
         if ok:
+            self._restart_until = time.monotonic() + 60
             self._live_auth_bad = False
             self._reload_accounts()
             with self._lock:
@@ -971,7 +1105,7 @@ class App:
             except Exception:
                 pass
             try:
-                self.lbl_foot.config(text="✓ %s" % msg, fg=C_GREEN)
+                self._refresh_restart_status()
             except Exception:
                 pass
         else:
@@ -980,6 +1114,54 @@ class App:
             except Exception:
                 pass
         return ok, msg
+
+    def _restart_seconds(self):
+        return max(0, math.ceil(self._restart_until - time.monotonic()))
+
+    def _refresh_restart_status(self):
+        left = self._restart_seconds()
+        button = getattr(self, "_restart_button", None)
+        if button is not None and button.winfo_exists():
+            if left:
+                button.config(text="↻ 重启 Codex（%ds）" % left)
+                if not button.winfo_manager():
+                    button.pack(side="left", padx=(5, 0))
+            else:
+                button.pack_forget()
+        if left and not self._foot_clickable:
+            self.lbl_foot.config(text="✓ 已切换 CLI · 重启 Codex（%ds）" % left,
+                                 fg=C_ACCENT, cursor="hand2")
+        elif self.lbl_foot.cget("text").startswith("✓ 已切换 CLI"):
+            self._apply_state()
+
+    def _refresh_restart(self):
+        self._refresh_restart_status()
+        self.root.after(1000, self._refresh_restart)
+
+    def _prompt_restart(self, parent=None):
+        from tkinter import messagebox
+        if self._restarting or not self._restart_seconds():
+            return
+        parent = parent or self.root
+        if not messagebox.askyesno("重启 Codex", "重启 Codex 桌面应用以使用刚切换的账号？",
+                                   icon="question", parent=parent):
+            return
+        self._restarting = True
+        self._restart_until = 0
+        self._refresh_restart_status()
+
+        def restart():
+            ok, message = windows_ui.restart_codex()
+
+            def finish():
+                self._restarting = False
+                if not ok:
+                    self._restart_until = time.monotonic() + 60
+                    messagebox.showerror("重启 Codex", message, parent=self.root)
+                self.lbl_foot.config(text=message, fg=C_GREEN if ok else C_RED)
+            self._run_ui(finish)
+
+        threading.Thread(target=restart, daemon=True).start()
 
     def _sync_login(self):
         """把当前 codex login 的账号存成快照, 并把显示切到它"""
@@ -1078,15 +1260,37 @@ class App:
         return text
 
     # ---------------- 浮动窗口 ----------------
+    def _scale_px(self, size):
+        selected = self.cfg.get("font_size") or ("medium" if self.cfg.get("medium_font") else "small")
+        return max(1, round(size * FONT_SCALES.get(selected, 1)))
+
+    def _set_font_size(self, size, custom_seconds, status, scroll):
+        if self.cfg.get("font_size", "medium" if self.cfg.get("medium_font") else "small") == size:
+            return
+        self.cfg["font_size"] = size
+        save_config(self.cfg)
+        self._set_win.destroy()
+        credits = getattr(self, "_credits_win", None)
+        had_credits = credits is not None and credits.winfo_exists()
+        if had_credits:
+            credits.destroy()
+        self._build_window()
+        self._apply_state()
+        self._open_settings(custom_seconds, status, scroll)
+        if had_credits:
+            self._open_credit_detail()
+            self._set_win.lift()
+
     def _build_window(self):
         import tkinter as tk
         from tkinter import font as tkfont
         r = self.root
+        if hasattr(self, "inner"):
+            self.inner.destroy()
         r.configure(bg=C_BORDER)                  # 外层=1px 边框色
-        self._W = 344
+        self._W = self._scale_px(364)
         sw, sh = r.winfo_screenwidth(), r.winfo_screenheight()
-        x = self.cfg.get("window_x")
-        y = self.cfg.get("window_y")
+        x, y = getattr(self, "_pos", (self.cfg.get("window_x"), self.cfg.get("window_y")))
         if x is None:
             x = sw - self._W - 16
         if y is None:
@@ -1094,12 +1298,12 @@ class App:
         self._pos = (int(x), int(y))
         r.geometry("%dx%d+%d+%d" % (self._W, 300, self._pos[0], self._pos[1]))
 
-        self.f_title = tkfont.Font(family="微软雅黑", size=10, weight="bold")
-        self.f_name = tkfont.Font(family="微软雅黑", size=9, weight="bold")
-        self.f_num = tkfont.Font(family="微软雅黑", size=14, weight="bold")
-        self.f_sub = tkfont.Font(family="微软雅黑", size=8)
-        self.f_tiny = tkfont.Font(family="微软雅黑", size=8)
-        self.f_pill = tkfont.Font(family="微软雅黑", size=7, weight="bold")
+        self.f_title = tkfont.Font(family="微软雅黑", size=self._scale_px(10.5), weight="bold")
+        self.f_name = tkfont.Font(family="微软雅黑", size=self._scale_px(9), weight="bold")
+        self.f_num = tkfont.Font(family="微软雅黑", size=self._scale_px(14), weight="bold")
+        self.f_sub = tkfont.Font(family="微软雅黑", size=self._scale_px(8.2))
+        self.f_tiny = tkfont.Font(family="微软雅黑", size=self._scale_px(7.8))
+        self.f_pill = tkfont.Font(family="微软雅黑", size=self._scale_px(7.2), weight="bold")
         f_title, f_sub, f_tiny, f_pill = self.f_title, self.f_sub, self.f_tiny, self.f_pill
 
         inner = tk.Frame(r, bg=C_BG)
@@ -1125,8 +1329,8 @@ class App:
         from PIL import ImageTk
         def hex2rgb(hx, a=255):
             return (int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16), a)
-        img_dim = ImageTk.PhotoImage(render_settings_icon(hex2rgb(C_SUB)))
-        img_hot = ImageTk.PhotoImage(render_settings_icon(hex2rgb(C_TEXT)))
+        img_dim = ImageTk.PhotoImage(render_settings_icon(hex2rgb(C_SUB), size=self._scale_px(15)))
+        img_hot = ImageTk.PhotoImage(render_settings_icon(hex2rgb(C_TEXT), size=self._scale_px(15)))
         gear = tk.Label(right_bar, bg=C_BG, image=img_dim, cursor="hand2", bd=0)
         gear.image_dim, gear.image_hot = img_dim, img_hot   # 防 GC
         gear.pack(side="right", padx=(0, 9), pady=(2, 0))
@@ -1152,12 +1356,6 @@ class App:
         self.lbl_nick.bind("<Button-1>", lambda e: self._open_switcher())
         self.lbl_nick.bind("<Enter>", lambda e: self.lbl_nick.config(fg="#a8d0ff"))
         self.lbl_nick.bind("<Leave>", lambda e: self.lbl_nick.config(fg=C_ACCENT))
-
-        # 套餐徽标与重置机会徽标 (空文本时隐藏, 避免露出空方块)
-        self.badge_box = tk.Frame(left_bar, bg=C_BG)
-        self.badge_box.pack(side="left", padx=(5, 0), pady=(3, 0))
-        self.lbl_plan = tk.Label(self.badge_box, text="", bg=C_CARD, fg=C_SUB, font=f_pill, padx=5, pady=1)
-        self.lbl_credits = tk.Label(self.badge_box, text="", bg=C_CARD, fg=C_ACCENT, font=f_pill, padx=4, pady=1)
 
         # ---- 仪表区 (单账号双环 或 多账号总览) ----
         self.cards_host = tk.Frame(inner, bg=C_BG)
@@ -1188,8 +1386,6 @@ class App:
         xb._no_drag = True
         self.lbl_mode._no_drag = True
         self.lbl_nick._no_drag = True
-        self.lbl_plan._no_drag = True
-        self.lbl_credits._no_drag = True
         self.lbl_hint._no_drag = True
         self.lbl_foot._no_drag = True
         self._bind_drag(r)
@@ -1198,31 +1394,26 @@ class App:
         self.root.after(300, self._clamp_to_screen)
 
     def _set_badges(self, plan_text, credits=None):
-        """更新标题栏套餐与重置机会徽标, 空内容时隐藏不占位"""
+        if not self.card:
+            return
+        self.lbl_credits.config(text="⚡ 重置卡 %s ›" % ("--" if credits is None else "%d 张" % credits))
         if plan_text:
             self.lbl_plan.config(text=plan_text)
             if not self.lbl_plan.winfo_manager():
-                self.lbl_plan.pack(side="left")
+                self.lbl_plan.pack(side="right")
         else:
             self.lbl_plan.config(text="")
             if self.lbl_plan.winfo_manager():
                 self.lbl_plan.pack_forget()
-
-        if credits is not None and credits > 0:
-            self.lbl_credits.config(text="⚡%d" % int(credits))
-            if not self.lbl_credits.winfo_manager():
-                self.lbl_credits.pack(side="left", padx=(4, 0))
-        else:
-            self.lbl_credits.config(text="")
-            if self.lbl_credits.winfo_manager():
-                self.lbl_credits.pack_forget()
 
     def _on_foot_click(self, e=None):
         if self._foot_clickable and self.view:
             ok, msg = self._launch_relogin(self.view)
             self.lbl_foot.config(text=msg if ok else ("⚠ %s" % msg),
                                  fg=C_ACCENT if ok else C_RED)
-        elif not self._foot_clickable:
+        elif self._restart_seconds():
+            self._prompt_restart()
+        elif e is not None:
             self._on_drag_start(e)
 
     def _show_context_menu(self, e):
@@ -1263,9 +1454,12 @@ class App:
         menu.add_separator()
         menu.add_command(label="设置…", command=self._open_settings)
         menu.add_command(label="复位窗口位置", command=self._reset_position)
+        menu.add_command(label="任务栏常驻显示 " + ("✓" if self.cfg["show_in_taskbar"] else ""),
+                         command=self._toggle_taskbar)
         menu.add_command(label="隐藏到托盘", command=self.toggle_window)
         menu.add_separator()
         menu.add_command(label="退出", command=self._quit)
+        menu.add_command(label=version_label(), state="disabled", foreground=C_SUB)
         try:
             menu.tk_popup(e.x_root, e.y_root)
         finally:
@@ -1289,7 +1483,7 @@ class App:
             w.destroy()
         self.card = None
         self.overview_cards = {}
-        self._W = 344
+        self._ring_state.clear()
 
         # 控制标题栏「总览/详情」切换按钮显隐
         if len(self.accounts) > 1:
@@ -1393,31 +1587,41 @@ class App:
             return
 
         # ---- 单账号双环详情模式 ----
-        size = 88
-        self._ring_size = size
+        size = self._scale_px(96)
         # 昵称: 多账号时带 ▾ 提示可切换, 过长自动省略避免挤压右侧按钮
         name = self._ellipsize(self.display_name(self.view), 10)
         if len(self.accounts) > 1:
             name += " ▾"
         self.lbl_nick.config(text=name,
                              cursor="hand2" if len(self.accounts) > 1 else "arrow")
-        self._set_badges("", None)
-
         rings = tk.Frame(self.cards_host, bg=C_BG)
         rings.pack(fill="x", padx=6, pady=(4, 0))
         cvs, tls = [], []
-        for title in ("5 小时窗口", "每周窗口"):
+        for title, background in (("5h", "#395b78"), ("周", "#5d507b")):
             col = tk.Frame(rings, bg=C_BG)
             col.pack(side="left", expand=True, padx=4)
             cv = tk.Canvas(col, width=size, height=size, bg=C_BG, bd=0, highlightthickness=0)
             cv.pack()
-            tk.Label(col, text=title, bg=C_BG, fg=C_SUB, font=self.f_sub).pack()
+            tk.Label(col, text=title, bg=background, fg=C_TEXT, font=self.f_pill,
+                     padx=self._scale_px(6), pady=1).place(relx=0, y=0)
             tl = tk.Label(col, text="", bg=C_BG, fg=C_SUB, font=self.f_tiny)
             tl.pack()
             cvs.append(cv)
             tls.append(tl)
 
         self.card = {"cv_p": cvs[0], "t_p": tls[0], "cv_s": cvs[1], "t_s": tls[1]}
+        badges = tk.Frame(self.cards_host, bg=C_BG)
+        badges.pack(fill="x", padx=self._scale_px(14), pady=(self._scale_px(4), 0))
+        self.lbl_credits = tk.Label(badges, bg=C_CARD, fg=C_ACCENT, font=self.f_pill,
+                                    padx=self._scale_px(6), pady=2, cursor="hand2", takefocus=True)
+        self.lbl_credits._no_drag = True
+        self.lbl_credits.pack(side="left")
+        self.lbl_credits.bind("<Button-1>", lambda e: self._open_credit_detail())
+        self.lbl_credits.bind("<Return>", lambda e: self._open_credit_detail())
+        self.lbl_plan = tk.Label(badges, bg=C_CARD, fg=C_SUB, font=self.f_pill,
+                                 padx=self._scale_px(6), pady=2)
+        self.lbl_credit_warn = tk.Label(self.cards_host, bg=C_BG, fg=C_YELLOW, font=self.f_tiny)
+        self._set_badges("", None)
         # 重新为动态创建的卡片控件绑定拖动与右键菜单
         self._bind_drag(self.cards_host)
         self._fit_height()
@@ -1567,15 +1771,29 @@ class App:
         for child in widget.winfo_children():
             self._bind_drag(child)
 
-    def _draw_ring(self, canvas, pct, color):
+    def _draw_ring(self, canvas, pct, color, time_ratio=None, countdown=""):
+        self._ring_state[canvas] = (pct, color, time_ratio, countdown)
+        self._paint_ring(canvas, pct, color, time_ratio, countdown)
+
+    def _paint_ring(self, canvas, pct, color, time_ratio, countdown):
         """环形进度: 用 PIL 4 倍超采样绘制再 LANCZOS 缩放, 消除锯齿"""
         from PIL import ImageTk
         size = int(float(canvas.cget("width")))
-        img = render_ring_image(pct, color, size=size, ring_width=8 if size >= 84 else 7)
-        photo = ImageTk.PhotoImage(img)
-        canvas.delete("all")
-        canvas.create_image(size / 2, size / 2, image=photo)
-        self._ring_photos[id(canvas)] = photo      # 保持引用, 防止被 GC
+        img = render_ring_image(pct, color, size=size, ring_width=self._scale_px(8),
+                                time_ratio=time_ratio, countdown=countdown, phase=self._wave_phase)
+        if hasattr(canvas, "_ring_photo"):
+            canvas._ring_photo.paste(img)
+        else:
+            canvas._ring_photo = ImageTk.PhotoImage(img)
+            canvas.create_image(size / 2, size / 2, image=canvas._ring_photo)
+
+    def _animate(self):
+        if self._animate_rings and self.root.state() != "withdrawn":
+            self._wave_phase = (self._wave_phase + 0.22) % math.tau
+            for canvas, state in self._ring_state.items():
+                if state[2] is not None and 0 < state[2] < 1:
+                    self._paint_ring(canvas, *state)
+        self.root.after(70 if self._animate_rings else 1000, self._animate)
 
     def _on_drag_start(self, e):
         self._drag = (e.x, e.y)
@@ -1686,13 +1904,17 @@ class App:
                 self._set_badges(d["plan"].upper(), d.get("credits"))
                 pr = None if d["p_used"] is None else 100 - d["p_used"]
                 sr = None if d["s_used"] is None else 100 - d["s_used"]
-                for cv, tlabel, rem, left, reset_at in (
-                    (self.card["cv_p"], self.card["t_p"], pr, d["p_left"], d["p_reset_at"]),
-                    (self.card["cv_s"], self.card["t_s"], sr, d["s_left"], d["s_reset_at"]),
+                for cv, tlabel, rem, left, reset_at, duration in (
+                    (self.card["cv_p"], self.card["t_p"], pr, d["p_left"], d["p_reset_at"], 18000),
+                    (self.card["cv_s"], self.card["t_s"], sr, d["s_left"], d["s_reset_at"], 604800),
                 ):
                     color = color_for(rem)
-                    self._draw_ring(cv, rem, color)
-                    tlabel.config(text="%s 重置 · 剩%s" % (fmt_reset_short(reset_at), fmt_duration(left)),
+                    ratio = left / duration if left is not None else None
+                    countdown = fmt_duration(left) if left is not None else ""
+                    if left is not None and left >= 86400:
+                        countdown = "%dd%dh" % (left // 86400, left % 86400 // 3600)
+                    self._draw_ring(cv, rem, color, ratio, countdown)
+                    tlabel.config(text="%s 重置" % fmt_reset_short(reset_at),
                                   fg=color if rem is not None and rem < 20 else C_SUB)
             elif self.card:
                 self._set_badges("", None)
@@ -1725,11 +1947,28 @@ class App:
                     self.lbl_foot.config(text=("⚠ %s" % err) if err else "正在获取数据…",
                                          fg=C_RED if err else C_SUB)
 
+        if self.card:
+            expires = d.get("credits_expire_at") if d else None
+            remaining = expires - time.time() if expires else None
+            warn = self.lbl_credit_warn
+            if remaining is not None and 0 < remaining <= 172800:
+                warn.config(text="⚠ 重置卡即将过期 · %s 到期" % fmt_reset_short(expires),
+                            fg=C_RED if remaining <= 86400 else C_YELLOW)
+                if not warn.winfo_manager():
+                    warn.pack(fill="x", pady=(3, 0))
+                    self._fit_height()
+            elif warn.winfo_manager():
+                warn.pack_forget()
+                self._fit_height()
+
         self.lbl_hint.config(text="每 %ds" % int(self.cfg.get("interval") or POLL_INTERVAL), fg="#6b6d76")
+        self._refresh_restart_status()
 
         # 托盘: 图标反映当前选中账号, 悬停文本展示全部账号实时余量
         pr = None if not d or d["p_used"] is None else 100 - d["p_used"]
         sr = None if not d or d["s_used"] is None else 100 - d["s_used"]
+        self._taskbar_quota = (pr, sr)
+        self._draw_taskbar()
         try:
             self.tray.icon = render_icon(pr, sr)
             if len(self.accounts) > 1:
@@ -1866,6 +2105,102 @@ class App:
             self.root.withdraw()
         # 不持久化显示状态: 避免误点 ✕ 后下次启动窗口直接消失
 
+    def _toggle_taskbar(self):
+        self.cfg["show_in_taskbar"] = not self.cfg["show_in_taskbar"]
+        if self._taskbar_setting is not None:
+            self._taskbar_setting.set(self.cfg["show_in_taskbar"])
+        save_config(self.cfg)
+        self._position_taskbar()
+        self.tray.update_menu()
+
+    def _refresh_taskbar(self):
+        self._position_taskbar()
+        self.root.after(700, self._refresh_taskbar)
+
+    def _position_taskbar(self):
+        win = self._taskbar_win
+        if not self.cfg["show_in_taskbar"]:
+            if win is not None:
+                win.withdraw()
+            return
+
+        bar, icons = windows_ui.taskbar_rects()
+        width = 162
+        if bar is None or bar.right - bar.left < width + 16 or windows_ui.fullscreen_active():
+            if win is not None:
+                win.withdraw()
+            return
+
+        height = max(26, min(36, bar.bottom - bar.top - 6))
+        anchor = icons.left - 8 if icons and icons.left >= bar.left + width else bar.right - 220
+        min_x = bar.left + 8
+        max_x = bar.right - width - 8
+        self._taskbar_x_limits = (min_x, max_x)
+        x = min(max(min_x, anchor - width + self.cfg["taskbar_offset_x"]), max_x)
+        y = bar.top + (bar.bottom - bar.top - height) // 2
+
+        if win is None:
+            import tkinter as tk
+            win = self._taskbar_win = tk.Toplevel(self.root)
+            win.withdraw()
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.attributes("-toolwindow", True)
+            self._taskbar_canvas = tk.Canvas(win, bg=C_BG, bd=0, highlightthickness=0,
+                                             cursor="hand2", width=width, height=height)
+            self._taskbar_canvas.pack(fill="both", expand=True)
+            self._taskbar_canvas.bind("<Configure>", lambda e: self._draw_taskbar())
+            self._taskbar_canvas.bind("<Button-3>", self._show_context_menu)
+
+            def start_drag(event):
+                self._taskbar_drag = (event.x_root, win.winfo_x(), win.winfo_y(),
+                                      self.cfg["taskbar_offset_x"])
+
+            def drag(event):
+                origin, win_x, win_y, _ = self._taskbar_drag
+                if abs(event.x_root - origin) > 3:
+                    left, right = self._taskbar_x_limits
+                    win.geometry("%+d%+d" % (min(max(left, win_x + event.x_root - origin), right), win_y))
+
+            def finish_drag(event):
+                origin, win_x, _, offset = self._taskbar_drag
+                self._taskbar_drag = None
+                if abs(event.x_root - origin) > 3:
+                    self.cfg["taskbar_offset_x"] = offset + win.winfo_x() - win_x
+                    save_config(self.cfg)
+                    self._position_taskbar()
+                else:
+                    self.toggle_window()
+
+            self._taskbar_drag = None
+            self._taskbar_canvas.bind("<Button-1>", start_drag)
+            self._taskbar_canvas.bind("<B1-Motion>", drag)
+            self._taskbar_canvas.bind("<ButtonRelease-1>", finish_drag)
+
+        if self._taskbar_drag is None:
+            win.geometry("%dx%d%+d%+d" % (width, height, x, y))
+        if win.state() == "withdrawn":
+            win.deiconify()
+            self._round_corners_of(win)
+        windows_ui.keep_topmost(win.winfo_id())
+
+    def _draw_taskbar(self):
+        if self._taskbar_win is None:
+            return
+        canvas = self._taskbar_canvas
+        canvas.delete("all")
+        height = max(26, canvas.winfo_height())
+        for i, (name, quota) in enumerate(zip(("5h", "周"), self._taskbar_quota)):
+            y = round(height * (i + 0.5) / 2)
+            color = color_for(quota)
+            canvas.create_text(9, y, text=name, fill=C_TEXT, font=("微软雅黑", 8, "bold"), anchor="w")
+            canvas.create_rectangle(33, y - 2, 107, y + 2, fill=C_TRACK, outline="")
+            if quota is not None and quota > 0:
+                canvas.create_rectangle(33, y - 2, 33 + min(100, quota) * .74, y + 2,
+                                        fill=color, outline="")
+            canvas.create_text(151, y, text="--" if quota is None else "%d%%" % round(quota),
+                               anchor="e", fill=color, font=("微软雅黑", 8, "bold"))
+
     def _set_alpha(self, value, persist=True):
         """设置窗口透明度 0.4-1.0"""
         value = max(0.4, min(1.0, round(float(value), 2)))
@@ -1897,8 +2232,136 @@ class App:
         log("低额度提醒改为: enabled=%s threshold=%s" % (
             self.cfg["notify_low"], self.cfg["notify_threshold"]))
 
+    def _popup_frame(self, window, width, below=False):
+        import tkinter as tk
+
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.attributes("-alpha", 0.98)
+        window.configure(bg=C_BORDER)
+        window.bind("<Escape>", lambda e: window.destroy())
+        viewport = tk.Frame(window, bg=C_BG)
+        viewport.pack(fill="both", expand=True, padx=1, pady=1)
+        canvas = tk.Canvas(viewport, bg=C_BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(viewport, command=canvas.yview)
+        canvas.config(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=C_BG)
+        item = canvas.create_window(0, 0, window=inner, anchor="nw", width=width - 2)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=e.width))
+
+        def wheel(event):
+            if scrollbar.winfo_manager():
+                canvas.yview_scroll(-int(event.delta / 120), "units")
+
+        window.bind("<MouseWheel>", wheel, add="+")
+
+        def refit():
+            window.update_idletasks()
+            left, top, right, bottom = windows_ui.work_area()
+            height = inner.winfo_reqheight() + 2
+            max_height = max(160, bottom - top - 16)
+            full_width = width
+            if height > max_height:
+                scrollbar.pack(side="right", fill="y")
+                full_width += scrollbar.winfo_reqwidth()
+            else:
+                scrollbar.pack_forget()
+                canvas.yview_moveto(0)
+            canvas.config(scrollregion=(0, 0, width - 2, height - 2))
+            height = min(height, max_height)
+            full_width = min(full_width, right - left - 16)
+            root_x, root_y = self._pos
+            root_bottom = root_y + self.root.winfo_height()
+            x = min(max(left + 8, root_x + (12 if below else -12)), right - full_width - 8)
+            y = root_bottom + 8 if below else root_y - height - 8
+            if y < top + 8 or y + height > bottom - 8:
+                y = root_y - height - 8 if below else root_bottom + 8
+            y = min(max(top + 8, y), bottom - height - 8)
+            window.geometry("%dx%d%+d%+d" % (full_width, height, x, y))
+
+        return inner, canvas, refit
+
+    def _open_credit_detail(self):
+        import tkinter as tk
+        import webbrowser
+
+        if not self.view:
+            return
+        window = getattr(self, "_credits_win", None)
+        if window is not None and window.winfo_exists():
+            window.lift()
+            return
+        window = self._credits_win = tk.Toplevel(self.root)
+        inner, _, refit = self._popup_frame(window, self._scale_px(304), below=True)
+        pad = self._scale_px(12)
+        header = tk.Frame(inner, bg=C_BG)
+        header.pack(fill="x", padx=pad, pady=(pad, 5))
+        tk.Label(header, text="⚡ 重置卡详情", bg=C_BG, fg=C_ACCENT, font=self.f_name).pack(side="left")
+        close = tk.Label(header, text="✕", bg=C_BG, fg=C_SUB, font=self.f_sub, cursor="hand2")
+        close.pack(side="right")
+        close.bind("<Button-1>", lambda e: window.destroy())
+
+        def separator():
+            tk.Frame(inner, bg=C_BORDER, height=1).pack(fill="x", padx=pad, pady=(4, 6))
+
+        def row(title, value, color=C_TEXT):
+            frame = tk.Frame(inner, bg=C_BG)
+            frame.pack(fill="x", padx=pad, pady=(0, self._scale_px(4)))
+            tk.Label(frame, text=title, bg=C_BG, fg=C_SUB, font=self.f_tiny).pack(side="left")
+            tk.Label(frame, text=value, bg=C_BG, fg=color, font=self.f_sub, anchor="e").pack(side="right")
+
+        def count(value):
+            return "%d 张" % value if value is not None else "接口未返回"
+
+        def date(seconds):
+            return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M") if seconds else "未返回到期时间"
+
+        with self._lock:
+            data = self.results.get(self.view["home"], (None, None, None))[0]
+        separator()
+        row("所属账号", self._ellipsize(self.display_name(self.view), 24))
+        if not data:
+            row("状态", "暂无数据，请稍后刷新", C_SUB)
+        else:
+            row("可用重置卡", count(data["credits"]), C_ACCENT)
+            available = count(data["applicable_credits"])
+            if data["applicable_credits"] == 0:
+                available += "（当前不可用）" if data["limit_reached"] else "（未触及限流）"
+            row("当前可立即使用", available, C_GREEN if (data["applicable_credits"] or 0) > 0 else C_SUB)
+            if data["reset_cards"]:
+                for card in data["reset_cards"]:
+                    expiry = card["expires_at"]
+                    remaining = expiry - time.time() if expiry else math.inf
+                    tk.Label(inner, text=card["title"], bg=C_BG, fg=C_TEXT, font=self.f_sub,
+                             wraplength=self._scale_px(270), justify="left").pack(anchor="w", padx=pad)
+                    suffix = "（已过期）" if remaining <= 0 else (" 到期" if expiry else "")
+                    color = C_RED if remaining <= 86400 else C_YELLOW if remaining <= 172800 else C_SUB
+                    tk.Label(inner, text=date(expiry) + suffix, bg=C_BG, fg=color,
+                             font=self.f_tiny).pack(anchor="w", padx=pad, pady=(0, self._scale_px(6)))
+            elif data["credits"] == 0 or data["reset_cards"] == []:
+                row("重置卡明细", "暂无可用重置卡", C_SUB)
+            elif data["credits_expire_at"]:
+                row("过期时间（本地）", date(data["credits_expire_at"]))
+            else:
+                row("过期时间", "暂未取得重置卡明细", C_SUB)
+            row("额外额度余额", data["credits_balance"], C_SUB)
+
+        separator()
+        tk.Label(inner, text="触及 5h 或每周速率限制时，可用重置卡重置当前窗口额度。",
+                 bg=C_BG, fg=C_SUB, font=self.f_tiny, wraplength=self._scale_px(270),
+                 justify="left").pack(anchor="w", padx=pad)
+        link = tk.Label(inner, text="在浏览器打开 Codex 用量页 ↗", bg=C_CARD, fg=C_ACCENT,
+                        font=self.f_tiny, cursor="hand2", takefocus=True, pady=self._scale_px(4))
+        link.pack(fill="x", padx=pad, pady=(pad, pad))
+        link.bind("<Button-1>", lambda e: webbrowser.open(USAGE_URL))
+        link.bind("<Return>", lambda e: webbrowser.open(USAGE_URL))
+        refit()
+        self._round_corners_of(window)
+        window.focus_force()
+
     # ---------------- 设置面板 ----------------
-    def _open_settings(self):
+    def _open_settings(self, custom_seconds=None, previous_status=None, scroll=0):
         import tkinter as tk
         from tkinter import font as tkfont
 
@@ -1910,19 +2373,11 @@ class App:
 
         w = tk.Toplevel(self.root)
         self._set_win = w
-        w.overrideredirect(True)
-        w.attributes("-topmost", True)
-        w.attributes("-alpha", 0.98)
-        w.configure(bg=C_BORDER)
-        W = 306
-        w.geometry("%dx%d+%d+%d" % (W, 200, max(0, self.root.winfo_x() - 10), max(0, self.root.winfo_y() - 200)))
+        inner, scroller, refit = self._popup_frame(w, self._scale_px(416))
 
-        inner = tk.Frame(w, bg=C_BG)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-
-        f_bold = tkfont.Font(family="微软雅黑", size=9, weight="bold")
-        f_sub = tkfont.Font(family="微软雅黑", size=8)
-        f_tiny = tkfont.Font(family="微软雅黑", size=7)
+        f_bold = tkfont.Font(family="微软雅黑", size=self._scale_px(10), weight="bold")
+        f_sub = tkfont.Font(family="微软雅黑", size=self._scale_px(8.4))
+        f_tiny = tkfont.Font(family="微软雅黑", size=self._scale_px(7.6))
 
         # 标题 + 关闭
         head = tk.Frame(inner, bg=C_BG)
@@ -1945,6 +2400,8 @@ class App:
         acct_box.pack(fill="x", padx=12, pady=(3, 0))
 
         status = tk.Label(inner, text="", bg=C_BG, fg=C_SUB, font=f_tiny, anchor="w")
+        if previous_status:
+            status.config(text=previous_status[0], fg=previous_status[1])
         status.pack(fill="x", padx=12, pady=(3, 0))
 
         def render_accts():
@@ -1956,7 +2413,8 @@ class App:
                 row = tk.Frame(acct_box, bg=C_BG)
                 row.pack(fill="x", pady=(1, 0))
                 # 点昵称 = 切换显示
-                name = tk.Label(row, text=("%s %s" % ("✓" if cur else "○", self.display_name(a))),
+                name = tk.Label(row, text=("%s %s" % ("✓" if cur else "○",
+                                                      self._ellipsize(self.display_name(a), 29))),
                                 bg=C_BG, fg=C_ACCENT if cur else C_TEXT, font=f_sub,
                                 anchor="w", cursor="hand2")
                 name.pack(side="left")
@@ -2060,6 +2518,10 @@ class App:
                       padx=8, pady=3, cursor="hand2")
         b2.pack(side="left", padx=(5, 0))
         b2.bind("<Button-1>", do_sync)
+        self._restart_button = tk.Label(btns, bg=C_YELLOW, fg=C_BG, font=f_tiny,
+                                        padx=6, pady=3, cursor="hand2")
+        self._restart_button.bind("<Button-1>", lambda e: self._prompt_restart(w))
+        self._refresh_restart_status()
 
         tip = tk.Label(inner, text="切号请点『切为CLI』，切勿执行 codex logout 以免授权失效",
                        bg=C_BG, fg="#6b6d76", font=f_tiny, anchor="w")
@@ -2093,6 +2555,49 @@ class App:
             a_lbls[p] = lbl
         if cur_a in a_lbls:
             a_lbls[cur_a].config(bg=C_ACCENT, fg="#12141a")
+
+        tk.Label(a_chips, text="字体大小", bg=C_BG, fg=C_SUB, font=f_sub).pack(
+            side="left", padx=(self._scale_px(12), 4))
+        selected = self.cfg.get("font_size", "medium" if self.cfg.get("medium_font") else "small")
+        for size, text in zip(FONT_SCALES, ("小", "中", "大")):
+            chip = tk.Label(a_chips, text=text, bg=C_ACCENT if size == selected else C_CARD,
+                            fg=C_BG if size == selected else C_SUB, font=f_sub,
+                            padx=self._scale_px(6), pady=3, cursor="hand2", takefocus=True)
+            chip.pack(side="left", padx=(0, 5))
+
+            def change_size(event, size=size):
+                self._set_font_size(size, ent2.get(), (status.cget("text"), status.cget("fg")),
+                                    scroller.yview()[0])
+
+            chip.bind("<Button-1>", change_size)
+            chip.bind("<Return>", change_size)
+
+        switches = tk.Frame(inner, bg=C_BG)
+        switches.pack(fill="x", padx=12, pady=(10, 0))
+        taskbar = self._taskbar_setting = tk.BooleanVar(w, value=self.cfg["show_in_taskbar"])
+        autostart = tk.BooleanVar(w, value=autostart_enabled())
+
+        def clear_taskbar_setting(event):
+            if event.widget is w:
+                self._taskbar_setting = None
+
+        w.bind("<Destroy>", clear_taskbar_setting)
+
+        def toggle_autostart():
+            try:
+                set_autostart(autostart.get())
+                self.tray.update_menu()
+            except OSError:
+                autostart.set(autostart_enabled())
+                status.config(text="无法保存开机自启设置", fg=C_RED)
+
+        for text, variable, command in (
+            ("任务栏常驻显示", taskbar, self._toggle_taskbar),
+            ("开机自启", autostart, toggle_autostart),
+        ):
+            tk.Checkbutton(switches, text=text, variable=variable, command=command, bg=C_BG,
+                           activebackground=C_BG, selectcolor=C_CARD, fg=C_SUB,
+                           activeforeground=C_TEXT, font=f_sub).pack(side="left", padx=(0, 12))
 
         # ---- 低额度提醒 ----
         rowN = tk.Frame(inner, bg=C_BG)
@@ -2179,10 +2684,15 @@ class App:
             status.config(text="采集间隔已设为 %ds" % sec, fg=C_GREEN)
 
         ent2.bind("<Return>", apply_custom)
+        if custom_seconds is not None:
+            ent2.delete(0, "end")
+            ent2.insert(0, custom_seconds)
         tk.Label(row3, text="回车生效", bg=C_BG, fg="#6b6d76", font=f_sub).pack(side="left", padx=(6, 0))
 
         tk.Label(inner, text="修改即时生效, 自动保存", bg=C_BG, fg="#6b6d76",
-                 font=f_sub).pack(anchor="w", padx=12, pady=(12, 8))
+                 font=f_sub).pack(anchor="w", padx=12, pady=(12, 2))
+        tk.Label(inner, text=version_label(), bg=C_BG, fg=C_SUB,
+                 font=f_tiny).pack(anchor="w", padx=12, pady=(0, 8))
 
         # 拖动
         drag = {}
@@ -2194,20 +2704,9 @@ class App:
             wid.bind("<Button-1>", ds)
             wid.bind("<B1-Motion>", dm)
 
-        def refit():
-            """面板高度/位置跟随内容自适应"""
-            try:
-                w.update_idletasks()
-                H = max(160, inner.winfo_reqheight())
-                sw = self.root.winfo_screenwidth()
-                x = min(max(0, self.root.winfo_x() - 10), max(0, sw - W - 8))
-                y = max(0, self.root.winfo_y() - H - 8)
-                w.geometry("%dx%d+%d+%d" % (W, H, x, y))
-            except Exception as e:
-                log("设置面板 refit 失败: %s" % e)
-
         render_accts()
         refit()
+        scroller.yview_moveto(scroll)
         self._round_corners_of(w)
         w.bind("<Escape>", lambda e: w.destroy())
         w.focus_force()
@@ -2240,10 +2739,10 @@ class App:
 
 if __name__ == "__main__":
     # 调试开关: 目录下存在 debug.on 时把 stderr / 崩溃栈写进 tray_err.txt
-    if os.path.exists(os.path.join(SCRIPT_DIR, "debug.on")):
+    if os.path.exists(os.path.join(DATA_DIR, "debug.on")):
         try:
             import faulthandler
-            _ef = open(os.path.join(SCRIPT_DIR, "tray_err.txt"), "a", buffering=1,
+            _ef = open(os.path.join(DATA_DIR, "tray_err.txt"), "a", buffering=1,
                        encoding="utf-8")
             sys.stderr = _ef
             sys.stdout = _ef

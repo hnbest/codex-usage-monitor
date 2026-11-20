@@ -26,7 +26,7 @@ Windows 系统托盘 + 置顶透明浮动卡片工具，实时监控 OpenAI Code
 
 ## 安装与启动
 
-本项目同时提供 **C# 原生单文件版（推荐，约 78KB 零依赖）** 与 **Python 脚本版**，两者共用同一套多账号热切换协议与互斥锁：
+本项目提供 **C# 原生单文件版** 和 **Python 版**。两版支持额度监控、多账号切换、重置卡详情和到期提醒、三档窗口字号、任务栏常驻小窗及版本号显示，共用同一套多账号切换协议与互斥锁。
 
 ### 方式一：C# 原生单文件 `.exe`（推荐，可直接放桌面）
 1. 一键编译（使用 Windows 自带 `.NET Framework 4.x csc.exe`，无需额外安装 SDK）：
@@ -37,18 +37,28 @@ Windows 系统托盘 + 置顶透明浮动卡片工具，实时监控 OpenAI Code
 3. 版本从 `0.0.1` 开始。C# 源码、图标或打包脚本有变化时，下次成功打包会将末位加 1，同一套文件重复打包沿用原版本。设置底部、任务栏小窗及托盘图标的右键菜单均显示当前运行版本。
 4. 单独放桌面运行时，配置、多账号快照和日志自动存放在 `%LOCALAPPDATA%\CodexUsageMonitor\`，不会弄乱桌面。
 
-### 方式二：Python 脚本版
+### 方式二：Python 版
+
+源码和启动器位于 `python\`，与 `csharp\` 平级。以下命令从项目根目录运行。
+
 1. 安装 Python 依赖：
    ```bash
-   pip install -r requirements.txt
+   python -m pip install -r python\requirements.txt
    ```
 2. 启动方式：
-   - **双击无窗口启动**：直接双击 [`启动监控.vbs`](启动监控.vbs)
+   - **双击无窗口启动**：直接双击 [`python\启动监控.vbs`](python/启动监控.vbs)
    - **命令行启动**：
      ```bash
-     pythonw codex_tray.py
+     pythonw python\codex_tray.py
      ```
    - 调试模式下可在项目根目录创建空文件 `debug.on`，崩溃堆栈将写入 `tray_err.txt`。
+3. 打包为 Windows 单文件 EXE：
+   ```powershell
+   python -m pip install pyinstaller
+   python python\build_python.py
+   ```
+   产物位于 `python\dist\CodexUsageMonitor-Python-<版本号>.exe`。Python 版从 `0.0.1` 独立计版，源码或打包输入变化后，下次成功打包自动将末位加 1。直接运行脚本时显示最近一次打包的版本。
+4. 在项目内运行 Python 脚本时，继续读取项目根目录的配置和账号快照。单独运行打包版时，默认使用 `%LOCALAPPDATA%\CodexUsageMonitor\`。
 
 ## 多账号使用流程
 
