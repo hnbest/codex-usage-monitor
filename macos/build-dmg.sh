@@ -30,7 +30,7 @@ app_name=CodexUsageMonitor
 app="$build_dir/DerivedData/Build/Products/Release/$app_name.app"
 plist="$app/Contents/Info.plist"
 plutil -lint "$plist"
-lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/$app_name"
+lipo "$app/Contents/MacOS/$app_name" -verify_arch arm64 x86_64
 lipo -archs "$app/Contents/MacOS/$app_name"
 codesign --verify --strict --verbose=2 "$app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
