@@ -60,6 +60,10 @@ Windows 系统托盘 + 置顶透明浮动卡片工具，实时监控 OpenAI Code
    产物位于 `python\dist\CodexUsageMonitor-Python-<版本号>.exe`。Python 版从 `0.0.1` 独立计版，源码或打包输入变化后，下次成功打包自动将末位加 1。直接运行脚本时显示最近一次打包的版本。
 4. 在项目内运行 Python 脚本时，继续读取项目根目录的配置和账号快照。单独运行打包版时，默认使用 `%LOCALAPPDATA%\CodexUsageMonitor\`。
 
+### 方式三：macOS 原生版
+
+使用 Swift、SwiftUI 和 AppKit 开发，最低支持 macOS 13。在 Mac 上打开 Xcode 工程运行，详见 [macOS 版说明](macos/README.md)。
+
 ## 多账号使用流程
 
 1. **添加新账号**：打开设置（或右键主窗口）→ 点击 `添加新账号(独立隔离)`，在弹出的终端完成 `codex login`，监控程序会在 2 秒内自动归档入库，**不覆盖当前 CLI 登录**。

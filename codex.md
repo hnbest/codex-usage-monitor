@@ -154,3 +154,91 @@
 - 修改文件：本次新增记录至 codex.md，提交范围见上一条迁移记录；EXE 为本地打包产物。
 - 实现方法：按路径暂存源码和文档，检查忽略规则与暂存内容，并推送 origin/main。
 - 验证结果：Python 语法检查、0.0.2 打包及 Git 差异检查通过，已核对暂存范围不含账号资料、运行配置、日志或 EXE。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:02:04
+- 用户需求：了解本项目如何生成可在 macOS 使用的版本。
+- 执行结果：确认当前 C# 与 Python 版本均依赖 Windows，说明先移植 Python 的系统集成，再在 macOS 使用 PyInstaller 生成 .app 的流程。
+- 修改原因：避免将 Windows 专用入口和打包脚本误当成 macOS 构建入口。
+- 修改文件：codex.md。
+- 实现方法：检查 README、C# 构建脚本、Python 入口和 Windows 集成模块，核对 PyInstaller 官方打包选项。
+- 验证结果：确认现有 Python 启动会调用 Win32，打包脚本依赖 msvcrt。仅核查源码和文档，未构建或在 macOS 运行。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:03:43
+- 用户需求：为 Codex Usage Monitor 选择一套代码兼容 Windows 与 macOS 的方案。
+- 执行结果：建议复用 Python 业务逻辑，用 PySide6 Qt Widgets 统一界面，集中适配两端的系统集成；说明 Electron 和 Tauri 的迁移取舍。
+- 修改原因：记录跨平台选型与功能迁移范围。
+- 修改文件：codex.md。
+- 实现方法：核对现有额度查询、账号切换及 Windows 集成代码，查阅 Qt、Electron 和 Tauri 官方文档。
+- 验证结果：完成源码和文档核对及 Git 差异检查；未修改业务代码，未构建或运行双端程序。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:04:17
+- 用户需求：确认 Qt 和 PySide6 是否提供商业授权。
+- 执行结果：确认有付费商业版及 LGPLv3/GPLv3 社区版，说明商业销售与购买商业授权的区别，以及公开分发二进制时的许可义务。
+- 修改原因：记录跨平台选型涉及的授权条件。
+- 修改文件：codex.md。
+- 实现方法：查阅 Qt for Python 商业版说明和 Qt 官方开源许可义务。
+- 验证结果：已核对许可选项与公开分发要求并运行 Git 差异检查。无代码修改，未构建。
+
+## 2026-11-20 23:05:01
+- 用户需求：估算本项目改用 Tauri + Vue 后的代码体积。
+- 执行结果：实测 Python 源码约 123 KiB、2606 行，C# 源码约 221 KiB、5059 行。按保留现有主要功能估算，Tauri + Vue 自有源码约 3000 至 6000 行、150 至 300 KiB，使用系统 WebView 的单架构发布包预计为几 MB 量级。
+- 修改原因：记录源码基线与跨平台方案体积估算。
+- 修改文件：codex.md。
+- 实现方法：统计 Git 跟踪的 Python 和 C# 源文件，核对 Tauri 官方 WebView2 安装选项。
+- 验证结果：已核对源码基线并运行 Git 差异检查。Tauri 体积为估算，未迁移或构建。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:06:15
+- 用户需求：了解 Tauri + Vue 在 macOS 上的体积。
+- 执行结果：说明 macOS 共用源码并使用系统 WKWebView，单架构 DMG 估计为几 MB；同时包含 Apple 芯片及 Intel 的通用包会更大。
+- 修改原因：补充 macOS 发布包与 Windows WebView2 离线打包的区别。
+- 修改文件：codex.md。
+- 实现方法：核对 Tauri 官方 WKWebView、DMG 和通用架构文档。
+- 验证结果：已查阅文档并运行 Git 差异检查，安装包体积为估算，未构建。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:07:57
+- 用户需求：选择仅面向 macOS 的原生开发语言。
+- 执行结果：建议 Swift 作为开发语言，SwiftUI 负责菜单栏和界面，AppKit NSPanel 实现置顶浮窗，ServiceManagement 实现登录启动。
+- 修改原因：记录 macOS 独立原生版的选型。
+- 修改文件：codex.md。
+- 实现方法：按现有监控功能核对 Apple 官方菜单栏、浮窗及登录项 API。
+- 验证结果：完成文档核对及 Git 差异检查；未编写业务代码或构建。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:09:53
+- 用户需求：新增与 csharp、python 平级的 macos 目录。
+- 执行结果：已在项目根目录新增 macos/，并添加说明文件。
+- 修改原因：为独立的 macOS 原生版预留可被 Git 识别的目录。
+- 修改文件：macos/README.md、codex.md。
+- 实现方法：新增目录及简短 README，记录 Swift、SwiftUI 和 AppKit 的选型。
+- 验证结果：已确认 macos/README.md 可被 Git 识别，Git 差异检查通过。未创建 Xcode 工程或执行构建。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:20:24
+- 用户需求：建立平级 macos 原生工程，并与 C# 版主要功能对齐。
+- 执行结果：新增最低支持 macOS 13 的 Xcode 工程。实现菜单栏双额度、置顶浮窗、双环倒计时、订阅与重置卡详情、额度提醒、多账号轮询、独立登录和归档、重新登录、备注与移除、切换 CLI、确认重启 Codex、字号与透明度、位置保存和登录时启动。
+- 修改原因：提供独立 Swift 原生实现，使用 macOS 菜单栏数字承接 Windows 任务栏常驻小窗。
+- 修改文件：README.md、codex.md、macos/README.md、macos/.gitignore、macos/CodexUsageMonitor.xcodeproj/project.pbxproj、macos/CodexUsageMonitor.xcodeproj/xcshareddata/xcschemes/CodexUsageMonitor.xcscheme、macos/CodexUsageMonitor/Info.plist、macos/CodexUsageMonitor/AccountStore.swift、macos/CodexUsageMonitor/UsageAPI.swift、macos/CodexUsageMonitor/MonitorModel.swift、macos/CodexUsageMonitor/MonitorView.swift、macos/CodexUsageMonitor/CodexUsageMonitorApp.swift。
+- 实现方法：SwiftUI 和 AppKit 提供系统界面，URLSession 查询现有额度接口；快照沿用 auth.json 与 meta.json 结构，使用账户身份核对、私有文件权限、原子更换和写前检查处理账号操作。
+- 验证结果：Swift 语法树、Xcode 工程引用与共享方案、Info.plist、终端脚本隔离路径及成功失败模拟、Git 差异和忽略规则检查通过。当前环境是 Windows，未执行 Xcode 构建或 macOS 实机验证，真实登录、续期、切号、通知和重启待验证。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:26:08
+- 用户需求：生成可安装的 macOS 安装包，授权使用 GitHub 临时分支进行构建。
+- 执行结果：GitHub Actions 在 codex/macos-dmg 分支的 c61920d 提交构建成功，下载 0.1.0 通用 DMG 和 SHA-256 到 macos/dist。包大小 975956 字节。
+- 修改原因：为 macOS 13 及以上的 Apple 芯片和 Intel Mac 提供可拖拽安装的同一个文件。
+- 修改文件：macos/build-dmg.sh、.github/workflows/macos-dmg.yml、macos/.gitignore、macos/README.md、codex.md；生成 macos/dist/CodexUsageMonitor-0.1.0-macOS-universal.dmg 和同名 .sha256 文件。
+- 实现方法：Xcode Release 同时编译 arm64 和 x86_64，使用临时签名，制作含应用和 Applications 快捷方式的压缩 DMG。首次流水线修正 lipo 校验参数后重新执行。安装包保存在 Actions 产物，主分支与 Releases 未发布。
+- 验证结果：Actions 44763034456 的双架构、应用签名、磁盘映像校验和挂载检查通过。本地回读 SHA-256 为 1243cecfb509b80fe67cbad95ac57e62dafc71c566f654835fa46bcc5ea78340。未做 Apple 公证或 Mac 实机启动。无 Vue 或其引用 JS 改动。
+
+## 2026-11-20 23:31:15
+- 用户需求：在 GitHub 标签关联的发布页同时提供 Windows 与 macOS 安装包，明确标注处理器架构。
+- 执行结果：发布 v0.1.0 并设为最新，标签指向 c61920d。附件为 CodexUsageMonitor-0.0.1-windows-x86-x64.exe 和 CodexUsageMonitor-0.1.0-macos-arm64-x86_64.dmg。发布页：https://github.com/hnbest/codex-usage-monitor/releases/tag/v0.1.0。
+- 修改原因：让用户按操作系统和处理器选择正确的安装包。
+- 修改文件：codex.md；远端新增 v0.1.0 标签、发布说明和两个附件。
+- 实现方法：复用已打包的 Windows 0.0.1 和 macOS 0.1.0，确认 Windows PE 为 AnyCPU，按系统及架构命名并添加中文附件标签和发布说明。先上传并核对草稿附件，再公开发布。
+- 验证结果：公开 API 确认 v0.1.0 是最新发布且关联正确提交。两个附件均已匿名下载并核对 SHA-256，与本地文件一致。Windows ARM64 未验证，macOS 使用临时签名，尚未公证。无重新构建或 Vue 改动。
+
+## 2026-11-20 23:35:21
+- 用户需求：将 macOS 分支合并到主分支，提交并推送。
+- 执行结果：将 codex/macos-dmg 合并到 main，保留分支的两笔提交，同时提交本地 README 的 macOS 入口与本地尚未提交的历史记录。
+- 修改原因：将 macOS 原生工程、通用 DMG 打包和 GitHub Actions 工作流纳入主分支。
+- 修改文件：README.md、codex.md、.github/workflows/macos-dmg.yml、macos/.gitignore、macos/CodexUsageMonitor.xcodeproj/project.pbxproj、macos/CodexUsageMonitor.xcodeproj/xcshareddata/xcschemes/CodexUsageMonitor.xcscheme、macos/CodexUsageMonitor/AccountStore.swift、macos/CodexUsageMonitor/CodexUsageMonitorApp.swift、macos/CodexUsageMonitor/Info.plist、macos/CodexUsageMonitor/MonitorModel.swift、macos/CodexUsageMonitor/MonitorView.swift、macos/CodexUsageMonitor/UsageAPI.swift、macos/README.md、macos/build-dmg.sh。
+- 实现方法：确认本地未跟踪文件与分支中的 Git 内容一致，暂存工作区后以合并提交整合分支，恢复并校验本地文档，提交后推送 origin/main。
+- 验证结果：Git 差异检查通过，确认合并后的 macOS 工程及工作流与分支完全一致。无 Vue 或其引用 JS 改动，本轮未重新构建。
