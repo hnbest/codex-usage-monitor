@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.tmp
+
+# 运行时配置与日志
+config.json
+*.log
+*.log.*
+debug.on
+tray_err.txt
+
+# 敏感凭证（多账号快照目录，切勿提交）
+accounts/
+
+# C# 编译产物
+csharp/dist/
+/csharp.zip
+
+# 本机开发记录
+/gemini.md

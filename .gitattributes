@@ -1,0 +1,3 @@
+# Keep the original bytes of inputs hashed by the Windows build script.
+csharp/*.cs -text whitespace=cr-at-eol
+csharp/build.ps1 -text whitespace=cr-at-eol
