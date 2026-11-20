@@ -1,0 +1,33 @@
+name: Package macOS DMG
+
+on:
+  push:
+    branches:
+      - codex/macos-dmg
+    paths:
+      - 'macos/**'
+      - '.github/workflows/macos-dmg.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and verify the universal DMG
+        run: bash macos/build-dmg.sh
+      - name: Upload the verified disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexUsageMonitor-macOS-universal
+          path: |
+            macos/dist/*.dmg
+            macos/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
