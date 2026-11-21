@@ -30,6 +30,7 @@ namespace CodexUsageMonitor
         private Point? _dragStart;
         private Icon _currentTrayIcon;
         private NotifyIcon _tray;
+        private System.Windows.Forms.Timer _trayBalloonTimer;
         private TaskbarWidgetForm _taskbarWidget;
         private SettingsForm _settingsWin;
         private Form _switcherWin;
@@ -171,6 +172,7 @@ namespace CodexUsageMonitor
             {
                 NativeWin.ApplyRoundCorners(Handle);
                 _taskbarWidget = new TaskbarWidgetForm(this);
+                _taskbarWidget.VisibleChanged += delegate { UpdateTrayVisibility(); };
                 _taskbarWidget.SetEnabled(Config.show_in_taskbar);
                 ApplyState();
                 Thread t = new Thread(PollLoop);
@@ -577,8 +579,6 @@ namespace CodexUsageMonitor
             Config.window_y = y;
             Config.taskbar_offset_x = 0;
             CodexApi.SaveConfig(Config);
-            if (_taskbarWidget != null && !_taskbarWidget.IsDisposed)
-                _taskbarWidget.UpdatePosition();
             if (!Visible) Show();
             Activate();
         }
@@ -1667,6 +1667,12 @@ namespace CodexUsageMonitor
             _tray.Icon = _currentTrayIcon;
             _tray.Text = "Codex 用量 - 加载中...";
             _tray.Visible = true;
+            _trayBalloonTimer = new System.Windows.Forms.Timer { Interval = 10000 };
+            _trayBalloonTimer.Tick += delegate
+            {
+                _trayBalloonTimer.Stop();
+                UpdateTrayVisibility();
+            };
             _tray.MouseClick += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Left) ToggleWindow();
@@ -1686,6 +1692,21 @@ namespace CodexUsageMonitor
             };
         }
 
+        private void UpdateTrayVisibility()
+        {
+            if (!_stop.IsSet)
+                _tray.Visible = _trayBalloonTimer.Enabled || _taskbarWidget == null || !_taskbarWidget.Visible;
+        }
+
+        private void ShowTrayBalloon(string title, string message, ToolTipIcon icon)
+        {
+            // Windows 的气泡需要已注册的通知区域图标。
+            _trayBalloonTimer.Stop();
+            _trayBalloonTimer.Start();
+            UpdateTrayVisibility();
+            _tray.ShowBalloonTip(5000, title, message, icon);
+        }
+
         private void ToggleWindow()
         {
             if (Visible) Hide();
@@ -1700,7 +1721,8 @@ namespace CodexUsageMonitor
             {
                 if (_waveTimer != null) { _waveTimer.Stop(); _waveTimer.Dispose(); }
                 if (_restartTimer != null) { _restartTimer.Stop(); _restartTimer.Dispose(); }
-                if (_taskbarWidget != null && !_taskbarWidget.IsDisposed) { _taskbarWidget.Close(); _taskbarWidget.Dispose(); }
+                if (_trayBalloonTimer != null) _trayBalloonTimer.Dispose();
+                if (_taskbarWidget != null && !_taskbarWidget.IsDisposed) _taskbarWidget.Dispose();
                 if (_tray != null) { _tray.Visible = false; _tray.Dispose(); }
                 if (_currentTrayIcon != null) _currentTrayIcon.Dispose();
             }
@@ -1748,7 +1770,7 @@ namespace CodexUsageMonitor
                 {
                     try
                     {
-                        _tray.ShowBalloonTip(5000, "Codex 额度偏低", msg, ToolTipIcon.Warning);
+                        ShowTrayBalloon("Codex 额度偏低", msg, ToolTipIcon.Warning);
                         Logger.Log("已发送低额度通知: " + msg);
                     }
                     catch { }
@@ -2041,7 +2063,7 @@ namespace CodexUsageMonitor
                     string addedName = nick;
                     RunUi(delegate
                     {
-                        try { _tray.ShowBalloonTip(4000, "Codex 新账号就绪", "已自动添加账号: " + addedName, ToolTipIcon.Info); }
+                        try { ShowTrayBalloon("Codex 新账号就绪", "已自动添加账号: " + addedName, ToolTipIcon.Info); }
                         catch { }
                     });
                 }

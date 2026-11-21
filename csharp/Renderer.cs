@@ -291,40 +291,21 @@ namespace CodexUsageMonitor
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 g.Clear(Color.Transparent);
 
-                using (GraphicsPath bgPath = RoundedRect(new RectangleF(2, 2, S - 4, S - 4), 12))
+                using (GraphicsPath bgPath = RoundedRect(new RectangleF(1, 1, S - 2, S - 2), 12))
                 using (SolidBrush bgBr = new SolidBrush(Color.FromArgb(255, 30, 31, 36)))
                 {
                     g.FillPath(bgBr, bgPath);
                 }
 
-                Color c = Theme.ColorFor(pRemaining);
-                string text = pRemaining.HasValue ? ((int)Math.Round(pRemaining.Value)).ToString() : "?";
-                float fontSize = text.Length >= 3 ? 21f : 26f;
-                using (Font f = new Font("Arial", fontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-                using (SolidBrush br = new SolidBrush(c))
-                using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                using (StringFormat sf = new StringFormat(StringFormat.GenericTypographic)
                 {
-                    g.DrawString(text, f, br, new RectangleF(0, 2, S, S - 14), sf);
-                }
-
-                if (sRemaining.HasValue)
+                    Alignment = StringAlignment.Center,
+                    LineAlignment = StringAlignment.Center
+                })
                 {
-                    float barY = S - 12f, barH = 6f, margin = 10f;
-                    using (GraphicsPath trPath = RoundedRect(new RectangleF(margin, barY, S - 2 * margin, barH), 3f))
-                    using (SolidBrush trBr = new SolidBrush(Color.FromArgb(255, 58, 59, 68)))
-                    {
-                        g.FillPath(trBr, trPath);
-                    }
-                    float pct = (float)Math.Max(0.0, Math.Min(100.0, sRemaining.Value));
-                    float w = (S - 2 * margin) * pct / 100f;
-                    if (w > 4f)
-                    {
-                        using (GraphicsPath fillPath = RoundedRect(new RectangleF(margin, barY, w, barH), 3f))
-                        using (SolidBrush fillBr = new SolidBrush(Theme.ColorFor(sRemaining)))
-                        {
-                            g.FillPath(fillBr, fillPath);
-                        }
-                    }
+                    float rowHeight = S / 2f;
+                    DrawTrayProgress(g, pRemaining, new RectangleF(0, 0, S, rowHeight), sf);
+                    DrawTrayProgress(g, sRemaining, new RectangleF(0, rowHeight, S, rowHeight), sf);
                 }
 
                 IntPtr hIcon = bmp.GetHicon();
@@ -339,6 +320,38 @@ namespace CodexUsageMonitor
                 {
                     NativeWin.DestroyIcon(hIcon);
                 }
+            }
+        }
+
+        private static void DrawTrayProgress(Graphics g, double? remaining, RectangleF bounds, StringFormat format)
+        {
+            RectangleF track = RectangleF.Inflate(bounds, -1f, -3f);
+            double? percent = remaining.HasValue && !double.IsNaN(remaining.Value)
+                ? (double?)Math.Max(0.0, Math.Min(100.0, remaining.Value))
+                : null;
+            using (GraphicsPath trackPath = RoundedRect(track, 6f))
+            using (SolidBrush trackBrush = new SolidBrush(Theme.Track))
+            {
+                g.FillPath(trackBrush, trackPath);
+                if (percent.GetValueOrDefault() > 0.0)
+                {
+                    float fillWidth = track.Width * (float)(percent.Value / 100.0);
+                    GraphicsState state = g.Save();
+                    g.SetClip(new RectangleF(track.X, track.Y, fillWidth, track.Height), CombineMode.Intersect);
+                    using (SolidBrush fillBrush = new SolidBrush(Color.FromArgb(128, Theme.ColorFor(percent))))
+                    {
+                        g.FillPath(fillBrush, trackPath);
+                    }
+                    g.Restore(state);
+                }
+            }
+
+            string text = percent.HasValue ? ((int)Math.Round(percent.Value)).ToString() : "?";
+            float fontSize = text.Length >= 3 ? 30f : 36f;
+            using (Font font = new Font("Arial", fontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (SolidBrush brush = new SolidBrush(Theme.Text))
+            {
+                g.DrawString(text, font, brush, bounds, format);
             }
         }
     }

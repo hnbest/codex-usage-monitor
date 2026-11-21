@@ -1,20 +1,74 @@
 using System;
+using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+using System.Windows.Automation;
 using System.Windows.Forms;
 
 namespace CodexUsageMonitor
 {
     /// <summary>
-    /// 固定贴附在 Windows 任务栏上的实时额度小组件 (类似 TrafficMonitor 任务栏模式)
-    /// 无需点击悬浮窗, 随时在任务栏右下角直接看到 5h / 每周剩余百分比与进度条
+    /// 显示在 Explorer 主任务栏空位中的实时额度条。
     /// </summary>
-    public class TaskbarWidgetForm : Form
+    public class TaskbarWidgetForm : Control
     {
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int Left, Top, Right, Bottom; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int X, Y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SIZE { public int Width, Height; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BitmapHeader
+        {
+            public uint Size;
+            public int Width, Height;
+            public ushort Planes, BitsPerPixel;
+            public uint Compression, ImageSize;
+            public int XResolution, YResolution;
+            public uint ColorsUsed, ImportantColors;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Blend
+        {
+            public byte Operation, Flags, Opacity, AlphaFormat;
+        }
+
+        private struct Placement
+        {
+            public IntPtr Taskbar;
+            public Rectangle Bar;
+            public Rectangle Tray;
+            public Rectangle Widget;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ToolInfo
+        {
+            public int Size;
+            public int Flags;
+            public IntPtr Window;
+            public IntPtr Id;
+            public RECT Bounds;
+            public IntPtr Instance;
+            public string Text;
+            public IntPtr Data;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CommonControls
+        {
+            public int Size, Classes;
+        }
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern IntPtr FindWindow(string cls, string title);
@@ -24,6 +78,24 @@ namespace CodexUsageMonitor
 
         [DllImport("user32.dll")]
         private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int index);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetParent(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ScreenToClient(IntPtr hWnd, ref POINT point);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentProcessId();
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
@@ -37,28 +109,63 @@ namespace CodexUsageMonitor
         [DllImport("user32.dll")]
         private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
-        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-        private const uint SWP_NOSIZE = 0x0001;
-        private const uint SWP_NOMOVE = 0x0002;
+        [DllImport("user32.dll")]
+        private static extern bool UpdateLayeredWindow(IntPtr window, IntPtr destinationDc, IntPtr destination,
+            ref SIZE size, IntPtr sourceDc, ref POINT source, uint colorKey, ref Blend blend, uint flags);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleDC(IntPtr dc);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateDIBSection(IntPtr dc, ref BitmapHeader header, uint colors,
+            out IntPtr pixels, IntPtr section, uint offset);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr obj);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr dc);
+
+        [DllImport("comctl32.dll")]
+        private static extern bool InitCommonControlsEx(ref CommonControls controls);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, ref ToolInfo info);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, IntPtr lParam);
+
         private const uint SWP_NOACTIVATE = 0x0010;
-        private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const int WS_EX_LAYERED = 0x00080000;
         private const int WS_EX_NOACTIVATE = 0x08000000;
+        private const uint ULW_ALPHA = 2;
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_LAYOUTRTL = 0x00400000;
+        private const int WidgetWidth = 138;
+        private const int PaddingBetweenItems = 4;
+        private const int TTM_ADDTOOLW = 0x0432;
+        private const int TTM_UPDATETIPTEXTW = 0x0439;
+        private const int TTM_SETMAXTIPWIDTH = 0x0418;
 
         private readonly MainForm _owner;
         private readonly System.Windows.Forms.Timer _keepTimer;
-        private readonly ToolTip _tip;
+        private readonly NativeWindow _tip = new NativeWindow();
+        private string _tipText = "Codex 用量 - 加载中…";
 
         private UsageData _data;
         private string _err;
         private string _errKind;
         private string _acctName = "";
         private bool _hover;
-        private bool _hiddenByFullscreen;
-
-        private bool _dragging;
-        private bool _dragMoved;
-        private int _dragStartMouseX;
-        private int _dragStartOffsetX;
+        private IntPtr _taskbar;
+        private Rectangle _lastBar;
+        private Rectangle _lastWidget;
+        private Task<Placement> _measurement;
+        private int _measurementStarted;
+        private bool _widgetNeedsPaint = true;
 
         private readonly Font _fLbl = new Font("Microsoft YaHei UI", 7.8f, FontStyle.Regular);
         private readonly Font _fVal = new Font("Microsoft YaHei UI", 8.0f, FontStyle.Bold);
@@ -69,96 +176,36 @@ namespace CodexUsageMonitor
             get
             {
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                cp.Parent = _taskbar;
+                cp.ExStyle |= WS_EX_LAYERED | WS_EX_NOACTIVATE;
                 return cp;
             }
-        }
-
-        protected override bool ShowWithoutActivation
-        {
-            get { return true; }
         }
 
         public TaskbarWidgetForm(MainForm owner)
         {
             _owner = owner;
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
 
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            TopMost = true;
-            StartPosition = FormStartPosition.Manual;
-            Size = new Size(138, 38);
-            BackColor = ColorTranslator.FromHtml("#1c1e26");
-            Renderer.RoundControl(this, 6);
-            Opacity = 0.96;
+            Visible = false;
+            TabStop = false;
+            SetStyle(ControlStyles.Selectable, false);
+            Size = new Size(WidgetWidth, 38);
             Cursor = Cursors.Hand;
 
-            _tip = new ToolTip
-            {
-                InitialDelay = 300,
-                AutoPopDelay = 8000,
-                ReshowDelay = 200
-            };
+            MouseEnter += delegate { _hover = true; _widgetNeedsPaint = true; };
+            MouseLeave += delegate { _hover = false; _widgetNeedsPaint = true; };
 
-            MouseEnter += delegate { _hover = true; Invalidate(); };
-            MouseLeave += delegate { _hover = false; Invalidate(); };
-
-            MouseDown += delegate(object s, MouseEventArgs e)
+            MouseClick += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Left)
-                {
-                    _dragging = true;
-                    _dragMoved = false;
-                    _dragStartMouseX = Control.MousePosition.X;
-                    _dragStartOffsetX = _owner.Config.taskbar_offset_x;
-                }
-            };
-
-            MouseMove += delegate(object s, MouseEventArgs e)
-            {
-                if (_dragging && e.Button == MouseButtons.Left)
-                {
-                    int dx = Control.MousePosition.X - _dragStartMouseX;
-                    if (Math.Abs(dx) >= 4) _dragMoved = true;
-                    if (_dragMoved)
-                    {
-                        _owner.Config.taskbar_offset_x = _dragStartOffsetX + dx;
-                        UpdatePosition();
-                    }
-                }
-            };
-
-            MouseUp += delegate(object s, MouseEventArgs e)
-            {
-                if (e.Button == MouseButtons.Left && _dragging)
-                {
-                    _dragging = false;
-                    if (_dragMoved)
-                    {
-                        CodexApi.SaveConfig(_owner.Config);
-                    }
-                    else
-                    {
-                        _owner.ToggleWindowFromOutside();
-                    }
-                }
+                    _owner.ToggleWindowFromOutside();
                 else if (e.Button == MouseButtons.Right)
-                {
                     _owner.ShowContextMenuAt(Control.MousePosition);
-                }
             };
 
             _keepTimer = new System.Windows.Forms.Timer();
             _keepTimer.Interval = 400;
             _keepTimer.Tick += delegate { KeepOnTaskbar(); };
-
-            Load += delegate
-            {
-                NativeWin.ApplyRoundCorners(Handle);
-                UpdatePosition();
-                _keepTimer.Start();
-            };
         }
 
         public void UpdateData(string acctName, UsageData data, string err, string errKind)
@@ -168,11 +215,10 @@ namespace CodexUsageMonitor
             _err = err;
             _errKind = errKind;
 
-            string tipText;
             if (_data != null)
             {
-                tipText = string.Format(
-                    "{0} [{1}]\n5小时: 剩 {2}% · {3} 重置\n每周: 剩 {4}% · {5} 重置\n左键展开详情 · 拖动可微调位置 · 右键菜单",
+                _tipText = string.Format(
+                    "{0} [{1}]\n5小时: 剩 {2}% · {3} 重置\n每周: 剩 {4}% · {5} 重置\n左键展开详情 · 右键菜单",
                     _acctName,
                     (_data.Plan ?? "").ToUpperInvariant(),
                     _data.PRemaining.HasValue ? ((int)Math.Round(_data.PRemaining.Value)).ToString() : "-",
@@ -182,72 +228,184 @@ namespace CodexUsageMonitor
             }
             else if (_errKind == "auth")
             {
-                tipText = _acctName + "\n会话已失效，点击打开窗口重新登录";
+                _tipText = _acctName + "\n会话已失效，点击打开窗口重新登录";
             }
             else
             {
-                tipText = string.IsNullOrEmpty(_err) ? "Codex 用量 - 加载中…" : ("Codex 用量\n" + _err);
+                _tipText = string.IsNullOrEmpty(_err) ? "Codex 用量 - 加载中…" : ("Codex 用量\n" + _err);
             }
-            try { _tip.SetToolTip(this, tipText); } catch { }
-            Invalidate();
+            if (_tip.Handle != IntPtr.Zero)
+                SetToolTipText(TTM_UPDATETIPTEXTW);
+            _widgetNeedsPaint = true;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            _widgetNeedsPaint = true;
+            // Explorer 是原生父窗口，WinForms ToolTip 无法找到托管的顶层容器。
+            var controls = new CommonControls { Size = Marshal.SizeOf(typeof(CommonControls)), Classes = 0x0004 };
+            if (!InitCommonControlsEx(ref controls)) return;
+
+            try
+            {
+                _tip.CreateHandle(new CreateParams
+                {
+                    ClassName = "tooltips_class32",
+                    Parent = Handle,
+                    Style = unchecked((int)0x80000003), // WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX
+                    ExStyle = 0x00000008 // WS_EX_TOPMOST
+                });
+                SendMessage(_tip.Handle, TTM_SETMAXTIPWIDTH, IntPtr.Zero, new IntPtr(560));
+                SetToolTipText(TTM_ADDTOOLW);
+            }
+            catch (Win32Exception) { }
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            if (_tip.Handle != IntPtr.Zero)
+                _tip.DestroyHandle();
+            base.OnHandleDestroyed(e);
+        }
+
+        private void SetToolTipText(int message)
+        {
+            var info = new ToolInfo
+            {
+                Size = Marshal.SizeOf(typeof(ToolInfo)), // TTTOOLINFO_V2_SIZE 兼容两个常用的 comctl32 版本
+                Flags = 0x0011, // TTF_IDISHWND | TTF_SUBCLASS
+                Window = Handle,
+                Id = Handle,
+                Text = _tipText
+            };
+            SendMessage(_tip.Handle, message, IntPtr.Zero, ref info);
         }
 
         public void SetEnabled(bool enabled)
         {
             if (enabled)
             {
-                _hiddenByFullscreen = false;
-                if (!Visible) Show();
-                UpdatePosition();
-                SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                if (!_keepTimer.Enabled) _keepTimer.Start();
+                _keepTimer.Start();
+                KeepOnTaskbar();
             }
             else
             {
                 _keepTimer.Stop();
-                if (Visible) Hide();
+                Hide();
             }
         }
 
-        public void UpdatePosition()
+        private static Rectangle GetVisibleBounds(IntPtr window)
         {
-            IntPtr trayWnd = FindWindow("Shell_TrayWnd", null);
-            RECT tbRect = new RECT();
-            bool hasTb = trayWnd != IntPtr.Zero && GetWindowRect(trayWnd, out tbRect)
-                         && (tbRect.Right - tbRect.Left) > 100 && (tbRect.Bottom - tbRect.Top) > 20;
-
-            Rectangle scr = Screen.PrimaryScreen.Bounds;
-            Rectangle work = Screen.PrimaryScreen.WorkingArea;
-
-            int tbLeft = hasTb ? tbRect.Left : scr.Left;
-            int tbTop = hasTb ? tbRect.Top : work.Bottom;
-            int tbRight = hasTb ? tbRect.Right : scr.Right;
-            int tbBottom = hasTb ? tbRect.Bottom : scr.Bottom;
-            int tbH = Math.Max(32, tbBottom - tbTop);
-
-            int widgetH = Math.Max(28, Math.Min(38, tbH - 8));
-            if (Height != widgetH) Height = widgetH;
-
-            int anchorRight = tbRight - 220;
-            if (hasTb)
-            {
-                IntPtr notifyWnd = FindWindowEx(trayWnd, IntPtr.Zero, "TrayNotifyWnd", null);
-                RECT tnRect;
-                if (notifyWnd != IntPtr.Zero && GetWindowRect(notifyWnd, out tnRect) && tnRect.Left > tbLeft + Width)
-                {
-                    anchorRight = tnRect.Left - 8;
-                }
-            }
-
-            int x = anchorRight - Width + _owner.Config.taskbar_offset_x;
-            int minX = tbLeft + 8;
-            int maxX = Math.Max(minX, tbRight - Width - 8);
-            x = Math.Min(Math.Max(minX, x), maxX);
-            int y = tbTop + (tbH - Height) / 2;
-
-            if (Left != x || Top != y)
-                Location = new Point(x, y);
+            RECT bounds;
+            if (window == IntPtr.Zero || !IsWindowVisible(window) || !GetWindowRect(window, out bounds))
+                return Rectangle.Empty;
+            return Rectangle.FromLTRB(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
         }
+
+        private static Placement ReadShellBounds()
+        {
+            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
+            Rectangle bar = GetVisibleBounds(taskbar);
+            if (bar.Width <= bar.Height || bar.Height < 28 ||
+                (GetWindowLong(taskbar, GWL_EXSTYLE) & WS_EX_LAYOUTRTL) != 0)
+                return default(Placement);
+
+            Rectangle tray = GetVisibleBounds(FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null));
+            if (tray.Width <= 0 || tray.Left <= bar.Left || !bar.IntersectsWith(tray))
+                return default(Placement);
+
+            return new Placement { Taskbar = taskbar, Bar = bar, Tray = tray };
+        }
+
+        private static Placement MeasureTaskbar(Placement placement)
+        {
+            try
+            {
+                var occupied = new List<Rectangle>();
+                uint shellProcess;
+                if (GetWindowThreadProcessId(placement.Taskbar, out shellProcess) == 0)
+                    return placement;
+                uint ourProcess = GetCurrentProcessId();
+                bool hasTaskButtons = false;
+                Rectangle legacyTaskList = Rectangle.Empty;
+                int trayLeft = placement.Tray.Left;
+
+                // 批量读取 UI Automation 属性，避免逐个查询跨进程控件。
+                var cache = new CacheRequest { TreeFilter = Automation.RawViewCondition };
+                cache.Add(AutomationElement.BoundingRectangleProperty);
+                cache.Add(AutomationElement.IsOffscreenProperty);
+                cache.Add(AutomationElement.ClassNameProperty);
+                cache.Add(AutomationElement.AutomationIdProperty);
+                cache.Add(AutomationElement.ProcessIdProperty);
+                cache.Add(AutomationElement.ControlTypeProperty);
+
+                AutomationElementCollection elements;
+                using (cache.Activate())
+                {
+                    elements = AutomationElement.FromHandle(placement.Taskbar)
+                        .FindAll(TreeScope.Descendants, Condition.TrueCondition);
+                }
+                foreach (AutomationElement element in elements)
+                {
+                    var info = element.Cached;
+                    var bounds = info.BoundingRectangle;
+                    if (info.IsOffscreen || bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0 ||
+                        info.ProcessId == ourProcess)
+                        continue;
+                    Rectangle rect = Rectangle.FromLTRB((int)Math.Floor(bounds.Left), (int)Math.Floor(bounds.Top),
+                        (int)Math.Ceiling(bounds.Right), (int)Math.Ceiling(bounds.Bottom));
+                    if (!placement.Bar.IntersectsWith(rect))
+                        continue;
+
+                    string className = info.ClassName;
+                    if (className.StartsWith("SystemTray.", StringComparison.Ordinal))
+                        trayLeft = Math.Min(trayLeft, rect.Left);
+                    if (className == "MSTaskListWClass")
+                        legacyTaskList = rect;
+                    bool taskButton = className == "Taskbar.TaskListButtonAutomationPeer";
+                    hasTaskButtons |= taskButton;
+
+                    if (info.AutomationId == "WidgetsButton" || className == "ShellFeedsTaskbarViewWindow" ||
+                        className == "DynamicContent2" || (info.ProcessId != 0 && info.ProcessId != shellProcess) ||
+                        taskButton || info.ControlType == ControlType.Button ||
+                        info.ControlType == ControlType.SplitButton || info.ControlType == ControlType.CheckBox ||
+                        info.ControlType == ControlType.Edit || info.ControlType == ControlType.MenuItem ||
+                        info.ControlType == ControlType.TabItem || info.ControlType == ControlType.ListItem)
+                        occupied.Add(rect);
+                }
+
+                // 内部控件树不可读时交给原生托盘图标。
+                if (hasTaskButtons || (!legacyTaskList.IsEmpty && occupied.Exists(legacyTaskList.Contains)))
+                    placement.Widget = FindFreeSlot(placement.Bar, trayLeft, occupied);
+            }
+            catch (ElementNotAvailableException) { }
+            catch (COMException) { }
+            catch (InvalidOperationException) { }
+            catch (ArgumentException) { }
+            return placement;
+        }
+
+        private static Rectangle FindFreeSlot(Rectangle bar, int trayLeft, List<Rectangle> occupied)
+        {
+            int height = Math.Min(38, Math.Max(28, bar.Height - 8));
+            int top = bar.Top + (bar.Height - height) / 2;
+            int right = trayLeft - PaddingBetweenItems;
+            // 从通知区往左找最近的可用空位，逐个避开已有控件。
+            occupied.Sort((a, b) => b.Right.CompareTo(a.Right));
+            foreach (Rectangle item in occupied)
+            {
+                if (item.Left < right + PaddingBetweenItems &&
+                    item.Right > right - WidgetWidth - PaddingBetweenItems)
+                    right = item.Left - PaddingBetweenItems;
+            }
+            if (right - WidgetWidth < bar.Left + PaddingBetweenItems)
+                return Rectangle.Empty;
+
+            return new Rectangle(right - WidgetWidth, top, WidgetWidth, height);
+        }
+
 
         private bool IsForegroundFullscreen()
         {
@@ -263,7 +421,7 @@ namespace CodexUsageMonitor
 
                 // 二次校验: 排除桌面(Progman/WorkerW)与任务栏自身, 防止点击桌面或任务栏时误隐藏
                 IntPtr fg = GetForegroundWindow();
-                if (fg == IntPtr.Zero || fg == Handle || fg == _owner.Handle) return false;
+                if (fg == IntPtr.Zero || (IsHandleCreated && fg == Handle) || (_owner.IsHandleCreated && fg == _owner.Handle)) return false;
                 System.Text.StringBuilder cls = new System.Text.StringBuilder(64);
                 GetClassName(fg, cls, cls.Capacity);
                 string clsName = cls.ToString();
@@ -282,41 +440,144 @@ namespace CodexUsageMonitor
 
         private void KeepOnTaskbar()
         {
-            if (!_owner.Config.show_in_taskbar) return;
-
-            bool fs = IsForegroundFullscreen();
-            if (fs)
+            Placement current = ReadShellBounds();
+            if (current.Taskbar == IntPtr.Zero || IsForegroundFullscreen())
             {
-                if (Visible)
-                {
-                    _hiddenByFullscreen = true;
-                    Hide();
-                }
+                Hide();
                 return;
             }
-            if (_hiddenByFullscreen && !Visible)
+
+            // 托盘图标的显隐会改变通知区宽度。等新位置测量完成前，保留仍未被覆盖的长条。
+            if (_taskbar != current.Taskbar || _lastBar != current.Bar ||
+                _lastWidget.Right > current.Tray.Left || !IsHandleCreated)
+                Hide();
+
+            if (_measurement != null)
             {
-                _hiddenByFullscreen = false;
-                Show();
+                bool expired = unchecked(Environment.TickCount - _measurementStarted) > 2000;
+                if (expired) Hide();
+                if (!_measurement.IsCompleted) return;
+
+                Placement measured = _measurement.Status == TaskStatus.RanToCompletion
+                    ? _measurement.Result : default(Placement);
+                if (!expired && measured.Taskbar == current.Taskbar && measured.Bar == current.Bar &&
+                    measured.Tray == current.Tray)
+                {
+                    if (measured.Widget.IsEmpty || !Screen.FromHandle(current.Taskbar).Bounds.Contains(measured.Widget))
+                        Hide();
+                    else
+                    {
+                        PlaceWidget(measured);
+                        _lastBar = measured.Bar;
+                        _lastWidget = measured.Widget;
+                    }
+                }
+                else if (measured.Taskbar == IntPtr.Zero)
+                    Hide();
             }
 
-            if (Visible)
+            _measurementStarted = Environment.TickCount;
+            _measurement = Task.Run(() => MeasureTaskbar(current));
+        }
+
+        private void PlaceWidget(Placement placement)
+        {
+            var location = new POINT { X = placement.Widget.X, Y = placement.Widget.Y };
+            if (!ScreenToClient(placement.Taskbar, ref location))
             {
-                if (!_dragging) UpdatePosition();
-                SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                Hide();
+                return;
+            }
+
+            try
+            {
+                if (_taskbar != placement.Taskbar)
+                {
+                    Hide();
+                    _taskbar = placement.Taskbar;
+                    if (IsHandleCreated) RecreateHandle();
+                }
+                IntPtr handle = Handle;
+                Size size = placement.Widget.Size;
+                _widgetNeedsPaint |= Size != size;
+                if (GetParent(handle) != _taskbar ||
+                    !SetWindowPos(handle, IntPtr.Zero, location.X, location.Y, size.Width, size.Height, SWP_NOACTIVATE) ||
+                    (_widgetNeedsPaint && !PaintLayeredWidget(handle, size)))
+                {
+                    Hide();
+                    return;
+                }
+                _widgetNeedsPaint = false;
+                Show();
+            }
+            catch (Win32Exception)
+            {
+                Hide();
             }
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void WndProc(ref Message message)
         {
-            base.OnPaint(e);
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            if (message.Msg == 0x0021) // WM_MOUSEACTIVATE
+            {
+                message.Result = new IntPtr(3); // MA_NOACTIVATE
+                return;
+            }
+            base.WndProc(ref message);
+        }
 
+
+        private bool PaintLayeredWidget(IntPtr handle, Size size)
+        {
+            IntPtr dc = CreateCompatibleDC(IntPtr.Zero);
+            if (dc == IntPtr.Zero) return false;
+
+            var header = new BitmapHeader
+            {
+                Size = (uint)Marshal.SizeOf(typeof(BitmapHeader)),
+                Width = size.Width,
+                Height = -size.Height,
+                Planes = 1,
+                BitsPerPixel = 32
+            };
+            IntPtr pixels;
+            IntPtr dib = CreateDIBSection(dc, ref header, 0, out pixels, IntPtr.Zero, 0);
+            IntPtr previous = IntPtr.Zero;
+            try
+            {
+                if (dib == IntPtr.Zero || pixels == IntPtr.Zero) return false;
+                previous = SelectObject(dc, dib);
+                if (previous == IntPtr.Zero) return false;
+                using (var bitmap = new Bitmap(size.Width, size.Height, size.Width * 4, PixelFormat.Format32bppPArgb, pixels))
+                using (Graphics graphics = Graphics.FromImage(bitmap))
+                {
+                    graphics.Clear(Color.Transparent);
+                    PaintWidget(graphics, size);
+                }
+
+                var dimensions = new SIZE { Width = size.Width, Height = size.Height };
+                var source = new POINT();
+                var blend = new Blend { Opacity = 255, AlphaFormat = 1 };
+                return UpdateLayeredWindow(handle, IntPtr.Zero, IntPtr.Zero, ref dimensions,
+                    dc, ref source, 0, ref blend, ULW_ALPHA);
+            }
+            finally
+            {
+                if (previous != IntPtr.Zero) SelectObject(dc, previous);
+                if (dib != IntPtr.Zero) DeleteObject(dib);
+                DeleteDC(dc);
+            }
+        }
+
+        private void PaintWidget(Graphics g, Size size)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+
+            Rectangle client = new Rectangle(Point.Empty, size);
             Color bg = _hover ? ColorTranslator.FromHtml("#262934") : ColorTranslator.FromHtml("#1c1e26");
             Color bd = _hover ? Theme.Accent : ColorTranslator.FromHtml("#333746");
-            using (GraphicsPath frame = Renderer.RoundedRect(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 6))
+            using (GraphicsPath frame = Renderer.RoundedRect(new RectangleF(0.5f, 0.5f, size.Width - 1, size.Height - 1), 6))
             using (SolidBrush br = new SolidBrush(bg))
             using (Pen p = new Pen(bd, 1f))
             {
@@ -326,25 +587,25 @@ namespace CodexUsageMonitor
 
             if (_data != null)
             {
-                int rowH = Height / 2;
-                DrawRow(g, "5h", _data.PRemaining, 2, rowH - 2);
-                DrawRow(g, "周", _data.SRemaining, rowH, Height - rowH - 2);
+                int rowH = size.Height / 2;
+                DrawRow(g, "5h", _data.PRemaining, 2, rowH - 2, size.Width);
+                DrawRow(g, "周", _data.SRemaining, rowH, size.Height - rowH - 2, size.Width);
             }
             else if (_errKind == "auth")
             {
                 using (SolidBrush br = new SolidBrush(Theme.Red))
                 using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    g.DrawString("⚠ 需重新登录", _fMsg, br, ClientRectangle, sf);
+                    g.DrawString("⚠ 需重新登录", _fMsg, br, client, sf);
             }
             else
             {
                 using (SolidBrush br = new SolidBrush(Theme.Sub))
                 using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    g.DrawString("Codex …", _fMsg, br, ClientRectangle, sf);
+                    g.DrawString("Codex …", _fMsg, br, client, sf);
             }
         }
 
-        private void DrawRow(Graphics g, string label, double? pct, int y, int h)
+        private void DrawRow(Graphics g, string label, double? pct, int y, int h, int width)
         {
             Color c = Theme.ColorFor(pct);
             using (SolidBrush subBr = new SolidBrush(Theme.Sub))
@@ -378,7 +639,7 @@ namespace CodexUsageMonitor
             using (SolidBrush valBr = new SolidBrush(c))
             using (StringFormat sfRight = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
             {
-                g.DrawString(val, _fVal, valBr, new RectangleF(76, y, Width - 82, h), sfRight);
+                g.DrawString(val, _fVal, valBr, new RectangleF(76, y, width - 82, h), sfRight);
             }
         }
 
@@ -388,7 +649,6 @@ namespace CodexUsageMonitor
             {
                 _keepTimer.Stop();
                 _keepTimer.Dispose();
-                _tip.Dispose();
                 _fLbl.Dispose();
                 _fVal.Dispose();
                 _fMsg.Dispose();
