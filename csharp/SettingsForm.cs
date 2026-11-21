@@ -140,6 +140,8 @@ namespace CodexUsageMonitor
         private readonly Dictionary<int, RoundChip> _alphaChips = new Dictionary<int, RoundChip>();
         private readonly Dictionary<int, RoundChip> _taskbarChips = new Dictionary<int, RoundChip>();
         private readonly Dictionary<int, RoundChip> _autostartChips = new Dictionary<int, RoundChip>();
+        private readonly Dictionary<int, RoundChip> _agyEnableChips = new Dictionary<int, RoundChip>();
+        private readonly Dictionary<int, RoundChip> _tbModeChips = new Dictionary<int, RoundChip>();
         private readonly Dictionary<int, RoundChip> _notifyChips = new Dictionary<int, RoundChip>();
         private readonly Dictionary<int, RoundChip> _intervalChips = new Dictionary<int, RoundChip>();
         private Point? _dragStart;
@@ -220,6 +222,8 @@ namespace CodexUsageMonitor
                 _alphaChips.Clear();
                 _taskbarChips.Clear();
                 _autostartChips.Clear();
+                _agyEnableChips.Clear();
+                _tbModeChips.Clear();
                 _notifyChips.Clear();
                 _intervalChips.Clear();
                 _fTitle = CreateFont(10f, FontStyle.Bold);
@@ -340,14 +344,29 @@ namespace CodexUsageMonitor
             y += 20;
 
             // 添加新账号 + 同步当前CLI + (切号后1分钟内显示)重启Codex
-            RoundChip bAdd = new RoundChip("+ 添加新账号 (独立隔离)", _fChip, UiPx(174), UiPx(28)) { Radius = UiPx(5), Primary = true, Location = UiPoint(PadX, y) };
+            RoundChip bAdd = new RoundChip("+ 添加 Codex 账号", _fChip, UiPx(134), UiPx(28)) { Radius = UiPx(5), Primary = true, Location = UiPoint(PadX, y) };
             bAdd.Click += delegate
             {
                 string msg;
                 bool ok = _owner.LaunchNewLogin(out msg);
                 SetStatus(msg, ok ? Theme.Accent : Theme.Red);
             };
-            RoundChip bSync = new RoundChip("同步当前 CLI", _fChip, UiPx(96), UiPx(28)) { Radius = UiPx(5), Location = UiPoint(PadX + 180, y) };
+            RoundChip bAddAgy = new RoundChip("+ 添加 AGY 云端账号", _fChip, UiPx(146), UiPx(28))
+            {
+                Radius = UiPx(5),
+                Primary = true,
+                ActiveBg = ColorTranslator.FromHtml("#9c7cff"),
+                ActiveHoverBg = ColorTranslator.FromHtml("#b399ff"),
+                ActiveFg = ColorTranslator.FromHtml("#12101a"),
+                Location = UiPoint(PadX + 140, y)
+            };
+            bAddAgy.Click += delegate
+            {
+                string msg;
+                bool ok = _owner.LaunchAgyCloudLogin(out msg);
+                SetStatus(msg, ok ? ColorTranslator.FromHtml("#c5b3ff") : Theme.Red);
+            };
+            RoundChip bSync = new RoundChip("同步 CLI", _fChip, UiPx(74), UiPx(28)) { Radius = UiPx(5), Location = UiPoint(PadX + 292, y) };
             bSync.NormalFg = Theme.Text;
             bSync.Click += delegate
             {
@@ -356,14 +375,19 @@ namespace CodexUsageMonitor
                 SetStatus(msg, ok ? Theme.Green : Theme.Red);
                 if (ok) { RenderAccounts(); Refit(); }
             };
-            _btnRestartCodex = new RoundChip("↻ 重启Codex", _fPill, UiPx(104), UiPx(28))
+            _lowerPanel.Controls.Add(bAdd);
+            _lowerPanel.Controls.Add(bAddAgy);
+            _lowerPanel.Controls.Add(bSync);
+            y += 34;
+
+            _btnRestartCodex = new RoundChip("↻ 重启Codex", _fPill, UiPx(120), UiPx(24))
             {
                 Radius = UiPx(5),
                 Primary = true,
                 ActiveBg = Theme.Yellow,
                 ActiveHoverBg = ColorTranslator.FromHtml("#ffe07d"),
                 ActiveFg = ColorTranslator.FromHtml("#1a1506"),
-                Location = UiPoint(PadX + 282, y),
+                Location = UiPoint(PadX, y),
                 Visible = false
             };
             _btnRestartCodex.Click += delegate
@@ -372,21 +396,18 @@ namespace CodexUsageMonitor
                 if (_owner.PromptRestartCodex(this, out msg) && !string.IsNullOrEmpty(msg))
                     SetStatus(msg, Theme.Accent);
             };
-            _lowerPanel.Controls.Add(bAdd);
-            _lowerPanel.Controls.Add(bSync);
             _lowerPanel.Controls.Add(_btnRestartCodex);
-            y += 35;
 
             Label tip = new Label
             {
-                Text = "提示：切号请点『切为CLI』，勿执行 codex logout 以免授权失效",
+                Text = "提示：Codex 切号点『切为CLI』；AGY 自动读本机，也可点上方添加多账号",
                 ForeColor = Theme.Muted,
                 Font = _fTiny,
                 AutoSize = true,
-                Location = UiPoint(PadX, y)
+                Location = UiPoint(PadX, y + 3)
             };
             _lowerPanel.Controls.Add(tip);
-            y += 22;
+            y += 24;
 
             // 分隔线 1
             _lowerPanel.Controls.Add(new Panel { BackColor = Theme.Border, Location = UiPoint(PadX, y), Size = UiSize(ContentW, 1) });
@@ -501,6 +522,54 @@ namespace CodexUsageMonitor
                     CodexApi.SetAutostart(av == 1);
                 };
                 _autostartChips[av] = chip;
+                _lowerPanel.Controls.Add(chip);
+            }
+            y += 38;
+
+            // ---- Antigravity 监控 & 任务栏模式（并排双列） ----
+            _lowerPanel.Controls.Add(new Label { Text = "Antigravity 监控", ForeColor = Theme.Sub, Font = _fSec, AutoSize = true, Location = UiPoint(PadX, y) });
+            _lowerPanel.Controls.Add(new Label { Text = "任务栏展示模式", ForeColor = Theme.Sub, Font = _fSec, AutoSize = true, Location = UiPoint(col2X, y) });
+            y += 22;
+
+            int curAgy = _owner.Config.enable_antigravity ? 1 : 0;
+            for (int i = 0; i < 2; i++)
+            {
+                int agv = binVals[i];
+                RoundChip chip = new RoundChip(autoTxts[i], _fChip, UiPx(64), UiPx(26))
+                {
+                    Radius = UiPx(5),
+                    Location = UiPoint(PadX + i * 72, y),
+                    Active = (agv == curAgy),
+                    ActiveBg = agv == 1 ? Theme.Green : Theme.Red,
+                    ActiveHoverBg = agv == 1 ? greenHover : redHover,
+                    ActiveFg = agv == 1 ? greenFg : Color.White
+                };
+                chip.Click += delegate
+                {
+                    HighlightChip(_agyEnableChips, agv);
+                    _owner.SetEnableAntigravity(agv == 1);
+                };
+                _agyEnableChips[agv] = chip;
+                _lowerPanel.Controls.Add(chip);
+            }
+
+            int curMode = _owner.Config.taskbar_mode == TaskbarDisplayMode.Dual ? 0 : 1;
+            string[] modeTxts = new string[] { "双平台同屏", "跟随当前" };
+            for (int i = 0; i < 2; i++)
+            {
+                int mv = i;
+                RoundChip chip = new RoundChip(modeTxts[i], _fChip, UiPx(82), UiPx(26))
+                {
+                    Radius = UiPx(5),
+                    Location = UiPoint(col2X + i * 88, y),
+                    Active = (mv == curMode)
+                };
+                chip.Click += delegate
+                {
+                    HighlightChip(_tbModeChips, mv);
+                    _owner.SetTaskbarMode(mv == 0 ? TaskbarDisplayMode.Dual : TaskbarDisplayMode.FollowCurrent);
+                };
+                _tbModeChips[mv] = chip;
                 _lowerPanel.Controls.Add(chip);
             }
             y += 38;
@@ -706,6 +775,8 @@ namespace CodexUsageMonitor
         {
             HighlightChip(_taskbarChips, _owner.Config.show_in_taskbar ? 1 : 0);
             HighlightChip(_autostartChips, CodexApi.AutostartEnabled() ? 1 : 0);
+            HighlightChip(_agyEnableChips, _owner.Config.enable_antigravity ? 1 : 0);
+            HighlightChip(_tbModeChips, _owner.Config.taskbar_mode == TaskbarDisplayMode.Dual ? 0 : 1);
             UpdateRestartButton();
 
             _acctBox.SuspendLayout();
@@ -721,10 +792,11 @@ namespace CodexUsageMonitor
                 AccountInfo acct = a;
                 bool cur = _owner.ViewAccount != null && acct.Uid == _owner.ViewAccount.Uid;
 
-                // 卡片外框（当前 CLI 账号带淡淡绿色边框，当前查看账号带蓝色边框）
+                bool isAgy = acct.Provider == ProviderKind.Antigravity;
+                // 卡片外框（当前 CLI 账号带淡淡绿色边框，AGY 本机紫框，当前查看账号带蓝色边框）
                 Color borderCol = acct.Live
                     ? ColorTranslator.FromHtml("#2a6f4c")
-                    : (cur ? ColorTranslator.FromHtml("#3c5b82") : Theme.Border);
+                    : (cur ? ColorTranslator.FromHtml("#3c5b82") : (isAgy ? ColorTranslator.FromHtml("#4b3e6e") : Theme.Border));
                 Panel cardWrap = new Panel
                 {
                     BackColor = borderCol,
@@ -744,7 +816,101 @@ namespace CodexUsageMonitor
                 // 右侧操作区采用绝对 X 坐标从右向左精确定位，顺序工整不错乱
                 int rightX = ContentW - 2 - 8;
 
-                if (!acct.Live)
+                if (isAgy && acct.IsAgyLocal)
+                {
+                    Label localTag = new Label
+                    {
+                        Text = "● 本机自动",
+                        ForeColor = ColorTranslator.FromHtml("#c5b3ff"),
+                        BackColor = ColorTranslator.FromHtml("#2d2445"),
+                        Font = _fPill,
+                        Size = UiSize(78, 20),
+                        TextAlign = ContentAlignment.MiddleCenter,
+                        Location = UiPoint(rightX - 78, 7)
+                    };
+                    Renderer.RoundControl(localTag, UiPx(5));
+                    card.Controls.Add(localTag);
+                    rightX -= 84;
+                }
+                else if (isAgy)
+                {
+                    // 云端 AGY 账号：删除 ✕ + 重命名 ✎ + 状态/重新登录
+                    Label xr = new Label
+                    {
+                        Text = "✕",
+                        ForeColor = Theme.Sub,
+                        Font = _fTiny,
+                        Size = UiSize(20, 22),
+                        TextAlign = ContentAlignment.MiddleCenter,
+                        Location = UiPoint(rightX - 20, 6),
+                        Cursor = Cursors.Hand
+                    };
+                    xr.MouseEnter += delegate { xr.ForeColor = Theme.Red; };
+                    xr.MouseLeave += delegate { xr.ForeColor = Theme.Sub; };
+                    xr.Click += delegate
+                    {
+                        if (_owner.RemoveAccountByUid(acct.Uid))
+                        {
+                            SetStatus("已删除 Antigravity 账号", Theme.Sub);
+                            RenderAccounts();
+                            Refit();
+                        }
+                    };
+                    card.Controls.Add(xr);
+                    rightX -= 22;
+
+                    Label ed = new Label
+                    {
+                        Text = "✎",
+                        ForeColor = Theme.Sub,
+                        Font = _fTiny,
+                        Size = UiSize(20, 22),
+                        TextAlign = ContentAlignment.MiddleCenter,
+                        Location = UiPoint(rightX - 20, 6),
+                        Cursor = Cursors.Hand
+                    };
+                    ed.MouseEnter += delegate { ed.ForeColor = Theme.Accent; };
+                    ed.MouseLeave += delegate { ed.ForeColor = Theme.Sub; };
+                    ed.Click += delegate { PromptRename(acct); };
+                    card.Controls.Add(ed);
+                    rightX -= 24;
+
+                    if (acct.AuthBad)
+                    {
+                        RoundChip rl = new RoundChip("重新登录", _fPill, UiPx(68), UiPx(22))
+                        {
+                            Radius = UiPx(5),
+                            Danger = true,
+                            BackColor = Theme.Card,
+                            Location = UiPoint(rightX - 68, 6)
+                        };
+                        rl.Click += delegate
+                        {
+                            string msg;
+                            bool ok = _owner.LaunchRelogin(acct, out msg);
+                            SetStatus(msg, ok ? Theme.Accent : Theme.Red);
+                        };
+                        card.Controls.Add(rl);
+                        rightX -= 74;
+                    }
+                    else
+                    {
+                        Label cloudTag = new Label
+                        {
+                            Text = "☁ 云端",
+                            ForeColor = Theme.Accent,
+                            BackColor = ColorTranslator.FromHtml("#222b3d"),
+                            Font = _fPill,
+                            Size = UiSize(54, 20),
+                            TextAlign = ContentAlignment.MiddleCenter,
+                            Location = UiPoint(rightX - 54, 7)
+                        };
+                        Renderer.RoundControl(cloudTag, UiPx(5));
+                        card.Controls.Add(cloudTag);
+                        rightX -= 60;
+                    }
+                }
+                else if (!acct.Live)
                 {
                     // 最右侧：删除 ✕
                     Label xr = new Label
@@ -870,11 +1036,11 @@ namespace CodexUsageMonitor
                     }
                 }
 
-                // 左侧：选中指示 + 邮箱（点击切换主窗查看）
-                int maxUnits = Math.Max(14, (rightX - 28) / 7);
+                // 左侧：选中指示 + 平台前缀 + 邮箱（点击切换主窗查看）
+                int maxUnits = Math.Max(12, (rightX - 52) / 7);
                 Label nameLbl = new Label
                 {
-                    Text = string.Format("{0}  {1}", cur ? "✓" : "○", FormatUtil.Ellipsize(acct.DisplayName, maxUnits)),
+                    Text = string.Format("{0} [{1}] {2}", cur ? "✓" : "○", acct.ProviderTag, FormatUtil.Ellipsize(acct.DisplayName, maxUnits)),
                     ForeColor = cur ? Theme.Accent : Theme.Text,
                     BackColor = Theme.Card,
                     Font = _fSub,

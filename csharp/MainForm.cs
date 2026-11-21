@@ -20,6 +20,7 @@ namespace CodexUsageMonitor
         private readonly Dictionary<string, double> _pendingLogins = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         private readonly ManualResetEventSlim _wake = new ManualResetEventSlim(false);
         private readonly ManualResetEventSlim _stop = new ManualResetEventSlim(false);
+        private EventWaitHandle _showEvent;
 
         private bool _liveAuthBad;
         private bool _footClickable;
@@ -40,6 +41,7 @@ namespace CodexUsageMonitor
         // UI 控件
         private Panel _inner;
         private Panel _cardsHost;
+        private Label _lblBrand;
         private Label _lblNick;
         private Label _lblPlan;
         private Label _lblCredits;
@@ -53,19 +55,27 @@ namespace CodexUsageMonitor
         private Bitmap _gearDim;
         private Bitmap _gearHot;
 
-        // 单账号双环控件
+        // 单账号双环控件 (Codex)
         private RingControl _ringP;
         private RingControl _ringS;
         private Label _lblTimeP;
         private Label _lblTimeS;
 
+        // 单账号模型池容器 (Antigravity)
+        private Panel _agyBucketsPanel;
+        private Label _lblAgySource;
+        private Label _lblAgyPlan;
+        private string _lastAgyRenderKey = "";
+
         // 多账号总览卡片控件
         private class OverviewWidgets
         {
             public Label Plan;
+            public Label TagP;
             public MiniBarControl BarP;
             public Label ValP;
             public Label RstP;
+            public Label TagS;
             public MiniBarControl BarS;
             public Label ValS;
             public Label RstS;
@@ -171,6 +181,10 @@ namespace CodexUsageMonitor
             Load += delegate
             {
                 NativeWin.ApplyRoundCorners(Handle);
+                ClampToScreen();
+                Rectangle wa = Screen.FromControl(this).WorkingArea;
+                Logger.Log(string.Format("窗口就绪: Loc=({0},{1}) Size=({2}x{3}) Vis={4} Opacity={5} WA=({6},{7},{8}x{9})",
+                    Left, Top, Width, Height, Visible, Opacity, wa.Left, wa.Top, wa.Width, wa.Height));
                 _taskbarWidget = new TaskbarWidgetForm(this);
                 _taskbarWidget.VisibleChanged += delegate { UpdateTrayVisibility(); };
                 _taskbarWidget.SetEnabled(Config.show_in_taskbar);
@@ -178,6 +192,7 @@ namespace CodexUsageMonitor
                 Thread t = new Thread(PollLoop);
                 t.IsBackground = true;
                 t.Start();
+                StartShowEventWatcher();
             };
 
             FormClosing += delegate(object s, FormClosingEventArgs e)
@@ -209,13 +224,16 @@ namespace CodexUsageMonitor
             {
                 if (a.Live) a.AuthBad = _liveAuthBad;
             }
+            List<AccountInfo> agyList = AntigravityApi.ListAccounts(Config.enable_antigravity);
+            list.AddRange(agyList);
+
             Dictionary<string, int> seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (AccountInfo a in list)
             {
-                string key = a.DisplayName;
+                string key = a.ProviderTag + ":" + a.DisplayName;
                 int cnt = seen.ContainsKey(key) ? seen[key] + 1 : 1;
                 seen[key] = cnt;
-                if (cnt > 1) a.Label = string.Format("{0} ({1})", key, cnt);
+                if (cnt > 1) a.Label = string.Format("{0} ({1})", a.DisplayName, cnt);
             }
             Accounts = list;
             string uid = Config.display_uid ?? "";
@@ -236,7 +254,7 @@ namespace CodexUsageMonitor
         {
             foreach (AccountInfo a in Accounts)
             {
-                if (a.Live) return a.DisplayName;
+                if (a.Provider == ProviderKind.Codex && a.Live) return a.DisplayName;
             }
             return "未登录";
         }
@@ -420,6 +438,16 @@ namespace CodexUsageMonitor
         public bool LaunchRelogin(AccountInfo acct, out string msg)
         {
             if (acct == null) { msg = "没有可重新登录的账号"; return false; }
+            if (acct.Provider == ProviderKind.Antigravity)
+            {
+                if (acct.IsAgyLocal)
+                {
+                    KickPoll();
+                    msg = "请在 Antigravity 客户端中保持登录，监控将自动识别";
+                    return true;
+                }
+                return LaunchAgyCloudLogin(out msg);
+            }
             try
             {
                 Directory.CreateDirectory(acct.Home);
@@ -440,6 +468,41 @@ namespace CodexUsageMonitor
                 msg = "打开失败: " + ex.Message;
                 return false;
             }
+        }
+
+        public bool LaunchAgyCloudLogin(out string msg)
+        {
+            return AntigravityApi.StartCloudOAuthLogin(Config, delegate(bool ok, string resultMsg)
+            {
+                RunUi(delegate
+                {
+                    if (ok)
+                    {
+                        if (!Config.enable_antigravity)
+                        {
+                            Config.enable_antigravity = true;
+                            CodexApi.SaveConfig(Config);
+                        }
+                        ReloadAccounts();
+                        RenderAccount();
+                        ApplyState();
+                        KickPoll();
+                        if (_settingsWin != null && !_settingsWin.IsDisposed)
+                        {
+                            _settingsWin.RenderAccounts();
+                            _settingsWin.Refit();
+                            _settingsWin.ShowExternalStatus(resultMsg, Theme.Green);
+                        }
+                        try { ShowTrayBalloon("Antigravity 账号就绪", resultMsg, ToolTipIcon.Info); }
+                        catch { }
+                    }
+                    else
+                    {
+                        if (_settingsWin != null && !_settingsWin.IsDisposed)
+                            _settingsWin.ShowExternalStatus(resultMsg, Theme.Red);
+                    }
+                });
+            }, out msg);
         }
 
         public bool LaunchNewLogin(out string msg)
@@ -467,7 +530,10 @@ namespace CodexUsageMonitor
 
         public bool RemoveAccountByUid(string uid)
         {
-            if (!CodexApi.RemoveAccount(uid)) return false;
+            bool ok = (!string.IsNullOrEmpty(uid) && uid.StartsWith("agy:", StringComparison.OrdinalIgnoreCase))
+                ? AntigravityApi.RemoveAccount(uid)
+                : CodexApi.RemoveAccount(uid);
+            if (!ok) return false;
             if (Config.display_uid == uid)
             {
                 Config.display_uid = "";
@@ -482,7 +548,10 @@ namespace CodexUsageMonitor
 
         public void RenameAccountByUid(string uid, string label)
         {
-            CodexApi.RenameAccount(uid, label);
+            if (!string.IsNullOrEmpty(uid) && uid.StartsWith("agy:", StringComparison.OrdinalIgnoreCase))
+                AntigravityApi.RenameAccount(uid, label);
+            else
+                CodexApi.RenameAccount(uid, label);
             ReloadAccounts();
             RenderAccount();
             ApplyState();
@@ -548,6 +617,30 @@ namespace CodexUsageMonitor
             CodexApi.SaveConfig(Config);
             if (_taskbarWidget != null && !_taskbarWidget.IsDisposed)
                 _taskbarWidget.SetEnabled(show);
+        }
+
+        public void SetEnableAntigravity(bool enabled)
+        {
+            if (Config.enable_antigravity == enabled) return;
+            Config.enable_antigravity = enabled;
+            CodexApi.SaveConfig(Config);
+            ReloadAccounts();
+            RenderAccount();
+            ApplyState();
+            KickPoll();
+            if (_settingsWin != null && !_settingsWin.IsDisposed)
+            {
+                _settingsWin.RenderAccounts();
+                _settingsWin.Refit();
+            }
+        }
+
+        public void SetTaskbarMode(TaskbarDisplayMode mode)
+        {
+            if (Config.taskbar_mode == mode) return;
+            Config.taskbar_mode = mode;
+            CodexApi.SaveConfig(Config);
+            ApplyState();
         }
 
         public void ToggleWindowFromOutside()
@@ -675,7 +768,7 @@ namespace CodexUsageMonitor
                 Padding = new Padding(0)
             };
 
-            Label lblCodex = new Label
+            _lblBrand = new Label
             {
                 Text = "Codex",
                 ForeColor = Theme.Text,
@@ -726,7 +819,7 @@ namespace CodexUsageMonitor
 
             Renderer.RoundControl(_lblPlan, UiPx(5));
             Renderer.RoundControl(_lblCredits, UiPx(5));
-            leftBar.Controls.Add(lblCodex);
+            leftBar.Controls.Add(_lblBrand);
             leftBar.Controls.Add(_lblNick);
             leftBar.Controls.Add(_lblPlan);
             leftBar.Controls.Add(_lblCredits);
@@ -857,6 +950,10 @@ namespace CodexUsageMonitor
             _lblTimeS = null;
             _btnCardCredits = null;
             _lblCardPlan = null;
+            _agyBucketsPanel = null;
+            _lblAgySource = null;
+            _lblAgyPlan = null;
+            _lastAgyRenderKey = "";
             _overviewCards.Clear();
 
             if (Accounts.Count > 1)
@@ -895,6 +992,7 @@ namespace CodexUsageMonitor
 
             if (IsOverviewMode())
             {
+                if (_lblBrand != null) { _lblBrand.Text = "总览"; _lblBrand.ForeColor = Theme.Text; }
                 _lblNick.Text = string.Format("{0} 个账号", Accounts.Count);
                 _lblNick.Cursor = Cursors.Hand;
                 SetBadges("", null);
@@ -904,9 +1002,11 @@ namespace CodexUsageMonitor
                 foreach (AccountInfo a in Accounts)
                 {
                     AccountInfo acct = a;
+                    bool isAgy = acct.Provider == ProviderKind.Antigravity;
+                    Color borderCol = acct.Live ? Theme.Accent : (isAgy ? ColorTranslator.FromHtml("#4b3e6e") : Theme.Border);
                     Panel cardWrap = new Panel
                     {
-                        BackColor = acct.Live ? Theme.Accent : Theme.Border,
+                        BackColor = borderCol,
                         Location = UiPoint(12, y),
                         Size = UiSize(cardW, 74)
                     };
@@ -920,9 +1020,27 @@ namespace CodexUsageMonitor
                     Renderer.RoundControl(card, UiPx(8));
                     cardWrap.Controls.Add(card);
 
-                    // 顶部行：右侧先 Dock 操作按钮，左侧昵称 + 套餐
+                    // 顶部行：右侧先 Dock 操作按钮，左侧平台徽标 + 昵称 + 套餐
                     Panel top = new Panel { Dock = DockStyle.Top, Height = UiPx(24), BackColor = Theme.Card, Padding = UiPadding(8, 5, 8, 0) };
-                    if (acct.Live)
+                    if (isAgy)
+                    {
+                        if (acct.IsAgyLocal)
+                        {
+                            top.Controls.Add(new Label { Text = "● 本机自动", ForeColor = ColorTranslator.FromHtml("#b39ddb"), Font = Fonts.Pill, AutoSize = true, Dock = DockStyle.Right, Padding = UiPadding(4, 2, 0, 0) });
+                        }
+                        else if (acct.AuthBad)
+                        {
+                            Label btn = new Label { Text = "重新登录", BackColor = ColorTranslator.FromHtml("#3a2024"), ForeColor = Theme.Red, Font = Fonts.Pill, AutoSize = true, Dock = DockStyle.Right, Padding = UiPadding(5, 2, 5, 2), Cursor = Cursors.Hand, Tag = "nodrag" };
+                            btn.Click += delegate { string m; LaunchRelogin(acct, out m); };
+                            Renderer.RoundControl(btn, UiPx(5));
+                            top.Controls.Add(btn);
+                        }
+                        else
+                        {
+                            top.Controls.Add(new Label { Text = "☁ 云端", ForeColor = Theme.Accent, Font = Fonts.Pill, AutoSize = true, Dock = DockStyle.Right, Padding = UiPadding(4, 2, 0, 0) });
+                        }
+                    }
+                    else if (acct.Live)
                     {
                         top.Controls.Add(new Label { Text = "● CLI当前", ForeColor = Theme.Green, Font = Fonts.Pill, AutoSize = true, Dock = DockStyle.Right, Padding = UiPadding(4, 2, 0, 0) });
                     }
@@ -944,26 +1062,38 @@ namespace CodexUsageMonitor
                     }
 
                     FlowLayoutPanel leftInfo = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Card, WrapContents = false };
-                    Label nameLbl = new Label { Text = FormatUtil.Ellipsize(acct.DisplayName, 22), ForeColor = Theme.Text, Font = Fonts.Name, AutoSize = true, Cursor = Cursors.Hand, Tag = "nodrag" };
+                    Label provLbl = new Label
+                    {
+                        Text = acct.ProviderTag,
+                        BackColor = isAgy ? ColorTranslator.FromHtml("#3b2d59") : ColorTranslator.FromHtml("#223854"),
+                        ForeColor = isAgy ? ColorTranslator.FromHtml("#d2beff") : Theme.Accent,
+                        Font = Fonts.Pill,
+                        AutoSize = true,
+                        Padding = UiPadding(3, 1, 3, 1),
+                        Margin = UiPadding(0, 1, 4, 0)
+                    };
+                    Renderer.RoundControl(provLbl, UiPx(4));
+                    Label nameLbl = new Label { Text = FormatUtil.Ellipsize(acct.DisplayName, 13), ForeColor = Theme.Text, Font = Fonts.Name, AutoSize = true, Cursor = Cursors.Hand, Tag = "nodrag" };
                     nameLbl.Click += delegate { SetDisplayUid(acct.Uid, true); };
                     nameLbl.MouseEnter += delegate { nameLbl.ForeColor = Theme.Accent; };
                     nameLbl.MouseLeave += delegate { nameLbl.ForeColor = Theme.Text; };
-                    Label planLbl = new Label { Text = "", BackColor = ColorTranslator.FromHtml("#2b2d37"), ForeColor = Theme.Sub, Font = Fonts.Pill, AutoSize = true, Padding = UiPadding(4, 1, 4, 1), Margin = UiPadding(5, 1, 0, 0), Visible = false };
+                    Label planLbl = new Label { Text = "", BackColor = ColorTranslator.FromHtml("#2b2d37"), ForeColor = Theme.Sub, Font = Fonts.Pill, AutoSize = true, Padding = UiPadding(4, 1, 4, 1), Margin = UiPadding(4, 1, 0, 0), Visible = false };
                     Renderer.RoundControl(planLbl, UiPx(5));
+                    leftInfo.Controls.Add(provLbl);
                     leftInfo.Controls.Add(nameLbl);
                     leftInfo.Controls.Add(planLbl);
                     top.Controls.Add(leftInfo);
                     card.Controls.Add(top);
 
-                    // 5h 行
-                    Label tP = new Label { Text = "5h", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 29), Size = UiSize(28, 16) };
-                    MiniBarControl barP = new MiniBarControl { Location = UiPoint(36, 33), Size = UiSize(140, 7) };
+                    // 行 1
+                    Label tP = new Label { Text = isAgy ? "Pro" : "5h", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 29), Size = UiSize(30, 16) };
+                    MiniBarControl barP = new MiniBarControl { Location = UiPoint(40, 33), Size = UiSize(136, 7) };
                     Label valP = new Label { Text = "--", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(182, 29), AutoSize = true };
                     Label rstP = new Label { Text = "", ForeColor = Theme.Muted, Font = Fonts.Pill, Location = UiPoint(230, 29), Size = UiSize(cardW - 240, 16), TextAlign = ContentAlignment.TopRight };
 
-                    // 周 行
-                    Label tS = new Label { Text = "周", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 49), Size = UiSize(28, 16) };
-                    MiniBarControl barS = new MiniBarControl { Location = UiPoint(36, 53), Size = UiSize(140, 7) };
+                    // 行 2
+                    Label tS = new Label { Text = isAgy ? "Fla" : "周", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 49), Size = UiSize(32, 16) };
+                    MiniBarControl barS = new MiniBarControl { Location = UiPoint(40, 53), Size = UiSize(136, 7) };
                     Label valS = new Label { Text = "--", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(182, 49), AutoSize = true };
                     Label rstS = new Label { Text = "", ForeColor = Theme.Muted, Font = Fonts.Pill, Location = UiPoint(230, 49), Size = UiSize(cardW - 240, 16), TextAlign = ContentAlignment.TopRight };
 
@@ -974,15 +1104,68 @@ namespace CodexUsageMonitor
                     _overviewCards[acct.Home] = new OverviewWidgets
                     {
                         Plan = planLbl,
-                        BarP = barP, ValP = valP, RstP = rstP,
-                        BarS = barS, ValS = valS, RstS = rstS
+                        TagP = tP, BarP = barP, ValP = valP, RstP = rstP,
+                        TagS = tS, BarS = barS, ValS = valS, RstS = rstS
                     };
                     y += 80;
                 }
                 _cardsHost.Height = UiPx(y + 2);
             }
+            else if (ViewAccount.Provider == ProviderKind.Antigravity)
+            {
+                if (_lblBrand != null) { _lblBrand.Text = "AGY"; _lblBrand.ForeColor = ColorTranslator.FromHtml("#c5b3ff"); }
+                string nick = FormatUtil.Ellipsize(ViewAccount.DisplayName, 17);
+                if (Accounts.Count > 1) nick += " ▾";
+                _lblNick.Text = nick;
+                _lblNick.Cursor = Accounts.Count > 1 ? Cursors.Hand : Cursors.Default;
+                SetBadges("", null);
+
+                _agyBucketsPanel = new Panel
+                {
+                    BackColor = Theme.Bg,
+                    Location = UiPoint(12, 4),
+                    Size = UiSize(WindowWidth - 26, 86)
+                };
+                _cardsHost.Controls.Add(_agyBucketsPanel);
+
+                Panel metaRow = new Panel
+                {
+                    Name = "agyMetaRow",
+                    BackColor = Theme.Bg,
+                    Location = UiPoint(14, 96),
+                    Size = UiSize(WindowWidth - 30, 26)
+                };
+                _lblAgySource = new Label
+                {
+                    Text = ViewAccount.IsAgyLocal ? "● 本机自动读取" : "☁ 云端 Google 账号",
+                    BackColor = Theme.Card,
+                    ForeColor = ViewAccount.IsAgyLocal ? ColorTranslator.FromHtml("#c5b3ff") : Theme.Accent,
+                    Font = Fonts.Pill,
+                    AutoSize = true,
+                    Padding = UiPadding(6, 2, 6, 2),
+                    Location = UiPoint(0, 2)
+                };
+                _lblAgyPlan = new Label
+                {
+                    Text = "",
+                    BackColor = Theme.Card,
+                    ForeColor = Theme.Sub,
+                    Font = Fonts.Pill,
+                    AutoSize = true,
+                    Padding = UiPadding(6, 2, 6, 2),
+                    Dock = DockStyle.Right,
+                    Visible = false
+                };
+                Renderer.RoundControl(_lblAgySource, UiPx(6));
+                Renderer.RoundControl(_lblAgyPlan, UiPx(5));
+                metaRow.Controls.Add(_lblAgySource);
+                metaRow.Controls.Add(_lblAgyPlan);
+                _cardsHost.Controls.Add(metaRow);
+                _cardsHost.Height = metaRow.Bottom + UiPx(2);
+            }
             else
             {
+                if (_lblBrand != null) { _lblBrand.Text = "Codex"; _lblBrand.ForeColor = Theme.Text; }
                 string nick = FormatUtil.Ellipsize(ViewAccount.DisplayName, 17);
                 if (Accounts.Count > 1) nick += " ▾";
                 _lblNick.Text = nick;
@@ -1198,30 +1381,38 @@ namespace CodexUsageMonitor
                 {
                     AccountInfo acct = a;
                     bool cur = ViewAccount != null && acct.Uid == ViewAccount.Uid;
-                    string vSuffix = acct.AuthBad ? " (需重新登录)" : (acct.Live ? " (CLI当前)" : "");
-                    ToolStripMenuItem iv = new ToolStripMenuItem(string.Format("{0} {1}{2}", cur ? "✓" : "  ", acct.DisplayName, vSuffix));
+                    string vSuffix = acct.AuthBad ? " (需重新登录)" : (acct.Live ? " (CLI当前)" : (acct.IsAgyLocal ? " (本机)" : ""));
+                    ToolStripMenuItem iv = new ToolStripMenuItem(string.Format("{0} [{1}] {2}{3}", cur ? "✓" : "  ", acct.ProviderTag, acct.DisplayName, vSuffix));
                     iv.Click += delegate { SetDisplayUid(acct.Uid, true); };
                     subView.DropDownItems.Add(iv);
 
-                    string cSuffix = acct.Live ? " (当前)" : (acct.AuthBad ? " (需先重登)" : "");
-                    ToolStripMenuItem ic = new ToolStripMenuItem(string.Format("{0} {1}{2}", acct.Live ? "●" : "  ", acct.DisplayName, cSuffix));
-                    ic.Click += delegate { string m; SwitchCliByUid(acct.Uid, out m); };
-                    subCli.DropDownItems.Add(ic);
+                    if (acct.Provider == ProviderKind.Codex)
+                    {
+                        string cSuffix = acct.Live ? " (当前)" : (acct.AuthBad ? " (需先重登)" : "");
+                        ToolStripMenuItem ic = new ToolStripMenuItem(string.Format("{0} {1}{2}", acct.Live ? "●" : "  ", acct.DisplayName, cSuffix));
+                        ic.Click += delegate { string m; SwitchCliByUid(acct.Uid, out m); };
+                        subCli.DropDownItems.Add(ic);
+                    }
                 }
                 menu.Items.Add(subView);
-                menu.Items.Add(subCli);
+                if (subCli.DropDownItems.Count > 0)
+                    menu.Items.Add(subCli);
             }
 
-            if (ViewAccount != null && !forTray)
+            if (ViewAccount != null && !forTray && !ViewAccount.IsAgyLocal)
             {
                 ToolStripMenuItem miRelogin = new ToolStripMenuItem("重新登录当前查看账号");
                 miRelogin.Click += delegate { string m; LaunchRelogin(ViewAccount, out m); };
                 menu.Items.Add(miRelogin);
             }
 
-            ToolStripMenuItem miAdd = new ToolStripMenuItem("添加新账号 (独立隔离)");
+            ToolStripMenuItem miAdd = new ToolStripMenuItem("添加 Codex 账号 (独立隔离)");
             miAdd.Click += delegate { string m; LaunchNewLogin(out m); };
             menu.Items.Add(miAdd);
+
+            ToolStripMenuItem miAddAgy = new ToolStripMenuItem("添加 Antigravity 云端账号 (Google)");
+            miAddAgy.Click += delegate { string m; LaunchAgyCloudLogin(out m); };
+            menu.Items.Add(miAddAgy);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -1237,6 +1428,16 @@ namespace CodexUsageMonitor
             miTaskbar.Checked = Config.show_in_taskbar;
             miTaskbar.Click += delegate { SetShowInTaskbar(!Config.show_in_taskbar); };
             menu.Items.Add(miTaskbar);
+
+            ToolStripMenuItem miDual = new ToolStripMenuItem("任务栏双平台同屏 (CDX + AGY)");
+            miDual.Checked = Config.taskbar_mode == TaskbarDisplayMode.Dual;
+            miDual.Click += delegate
+            {
+                SetTaskbarMode(Config.taskbar_mode == TaskbarDisplayMode.Dual
+                    ? TaskbarDisplayMode.FollowCurrent
+                    : TaskbarDisplayMode.Dual);
+            };
+            menu.Items.Add(miDual);
 
             if (forTray)
             {
@@ -1317,10 +1518,10 @@ namespace CodexUsageMonitor
                 Color baseBg = cur ? Theme.Card : Theme.Bg;
                 Panel row = new Panel { BackColor = baseBg, Location = new Point(6, y), Size = new Size(302, 26), Cursor = Cursors.Hand };
 
-                string cliMark = acct.Live ? " ·CLI" : "";
+                string cliMark = acct.Live ? " ·CLI" : (acct.IsAgyLocal ? " ·本机" : "");
                 Label lbl = new Label
                 {
-                    Text = string.Format("{0} {1}{2}", cur ? "✓" : "○", FormatUtil.Ellipsize(acct.DisplayName, 20), cliMark),
+                    Text = string.Format("{0} [{1}] {2}{3}", cur ? "✓" : "○", acct.ProviderTag, FormatUtil.Ellipsize(acct.DisplayName, 16), cliMark),
                     ForeColor = cur ? Theme.Accent : Theme.Text,
                     BackColor = baseBg,
                     Font = _smallFonts.Sub,
@@ -1334,17 +1535,40 @@ namespace CodexUsageMonitor
                 string tagTxt;
                 Color tagFg;
                 if (acct.AuthBad) { tagTxt = "需重新登录"; tagFg = Theme.Red; }
+                else if (fr != null && fr.ErrorKind == "offline") { tagTxt = "未运行"; tagFg = Theme.Muted; }
                 else if (fr != null && fr.Data != null)
                 {
-                    double? pr = fr.Data.PRemaining;
-                    double? sr = fr.Data.SRemaining;
-                    tagTxt = string.Format("5h {0}% · 周 {1}%",
-                        pr.HasValue ? ((int)Math.Round(pr.Value)).ToString() : "-",
-                        sr.HasValue ? ((int)Math.Round(sr.Value)).ToString() : "-");
-                    double? minR = null;
-                    if (pr.HasValue && sr.HasValue) minR = Math.Min(pr.Value, sr.Value);
-                    else minR = pr.HasValue ? pr : sr;
-                    tagFg = Theme.ColorFor(minR);
+                    if (acct.Provider == ProviderKind.Antigravity)
+                    {
+                        if (fr.Data.Groups != null && fr.Data.Groups.Count >= 2)
+                        {
+                            QuotaGroup g1 = fr.Data.Groups[0];
+                            QuotaGroup g2 = fr.Data.Groups[1];
+                            tagTxt = string.Format("{0} {1}% · {2} {3}%",
+                                g1.ShortName ?? "Gem",
+                                g1.MinRemaining.HasValue ? ((int)Math.Round(g1.MinRemaining.Value)).ToString() : "-",
+                                g2.ShortName ?? "Cld",
+                                g2.MinRemaining.HasValue ? ((int)Math.Round(g2.MinRemaining.Value)).ToString() : "-");
+                        }
+                        else if (fr.Data.MinRemaining.HasValue)
+                        {
+                            tagTxt = string.Format("剩 {0}%", (int)Math.Round(fr.Data.MinRemaining.Value));
+                        }
+                        else
+                        {
+                            tagTxt = "已连接";
+                        }
+                        tagFg = Theme.ColorFor(fr.Data.MinRemaining);
+                    }
+                    else
+                    {
+                        double? pr = fr.Data.PRemaining;
+                        double? sr = fr.Data.SRemaining;
+                        tagTxt = string.Format("5h {0}% · 周 {1}%",
+                            pr.HasValue ? ((int)Math.Round(pr.Value)).ToString() : "-",
+                            sr.HasValue ? ((int)Math.Round(sr.Value)).ToString() : "-");
+                        tagFg = Theme.ColorFor(fr.Data.MinRemaining);
+                    }
                 }
                 else { tagTxt = "加载中…"; tagFg = Theme.Muted; }
 
@@ -1719,6 +1943,7 @@ namespace CodexUsageMonitor
             _wake.Set();
             try
             {
+                if (_showEvent != null) { _showEvent.Set(); _showEvent.Dispose(); _showEvent = null; }
                 if (_waveTimer != null) { _waveTimer.Stop(); _waveTimer.Dispose(); }
                 if (_restartTimer != null) { _restartTimer.Stop(); _restartTimer.Dispose(); }
                 if (_trayBalloonTimer != null) _trayBalloonTimer.Dispose();
@@ -1737,6 +1962,16 @@ namespace CodexUsageMonitor
             int threshold = Config.notify_threshold;
             if (threshold <= 0) return;
 
+            if (acct.Provider == ProviderKind.Antigravity && d.Buckets != null)
+            {
+                foreach (QuotaBucket b in d.Buckets)
+                {
+                    if (!b.RemainingPct.HasValue) continue;
+                    double used = 100.0 - b.RemainingPct.Value;
+                    CheckSingleWindowNotify(acct, "agy_" + b.Id, b.Label, used, b.ResetAt, b.ResetLeft, threshold);
+                }
+                return;
+            }
             CheckSingleWindowNotify(acct, "p", "5小时额度", d.PUsed, d.PResetAt, d.PLeft, threshold);
             CheckSingleWindowNotify(acct, "s", "每周额度", d.SUsed, d.SResetAt, d.SLeft, threshold);
         }
@@ -1765,12 +2000,15 @@ namespace CodexUsageMonitor
             }
             if (shouldNotify)
             {
-                string msg = string.Format("{0} {1}仅剩 {2}%（{3}后重置）", acct.DisplayName, label, rem, FormatUtil.FmtDuration(left));
+                string title = acct.Provider == ProviderKind.Antigravity ? "Antigravity 额度偏低" : "Codex 额度偏低";
+                string msg = string.Format("{0} {1}仅剩 {2}%{3}",
+                    acct.DisplayName, label, rem,
+                    left.HasValue ? ("（" + FormatUtil.FmtDuration(left) + "后重置）") : "");
                 RunUi(delegate
                 {
                     try
                     {
-                        ShowTrayBalloon("Codex 额度偏低", msg, ToolTipIcon.Warning);
+                        ShowTrayBalloon(title, msg, ToolTipIcon.Warning);
                         Logger.Log("已发送低额度通知: " + msg);
                     }
                     catch { }
@@ -1817,18 +2055,64 @@ namespace CodexUsageMonitor
                         string planTxt = (ad.Plan ?? "").ToUpperInvariant();
                         w.Plan.Text = planTxt;
                         w.Plan.Visible = !string.IsNullOrEmpty(planTxt);
-                        double? pr = ad.PRemaining;
-                        double? sr = ad.SRemaining;
-                        Color pc = Theme.ColorFor(pr);
-                        Color sc = Theme.ColorFor(sr);
-                        w.BarP.SetValue(pr, pc);
-                        w.BarS.SetValue(sr, sc);
-                        w.ValP.Text = pr.HasValue ? ((int)Math.Round(pr.Value) + "%") : "--";
-                        w.ValP.ForeColor = pc;
-                        w.ValS.Text = sr.HasValue ? ((int)Math.Round(sr.Value) + "%") : "--";
-                        w.ValS.ForeColor = sc;
-                        w.RstP.Text = FormatUtil.FmtResetShort(ad.PResetAt);
-                        w.RstS.Text = FormatUtil.FmtResetShort(ad.SResetAt);
+                        if (a.Provider == ProviderKind.Antigravity)
+                        {
+                            if (ad.Groups != null && ad.Groups.Count > 0)
+                            {
+                                QuotaGroup g1 = ad.Groups[0];
+                                QuotaGroup g2 = ad.Groups.Count >= 2 ? ad.Groups[1] : null;
+                                w.TagP.Text = g1.ShortName ?? "Gem";
+                                w.TagS.Text = g2 != null ? (g2.ShortName ?? "Cld") : "";
+                                double? p1 = g1.MinRemaining;
+                                double? p2 = g2 != null ? g2.MinRemaining : null;
+                                Color c1 = Theme.ColorFor(p1);
+                                Color c2 = Theme.ColorFor(p2);
+                                w.BarP.SetValue(p1, c1);
+                                w.BarS.SetValue(p2, c2);
+                                w.ValP.Text = p1.HasValue ? ((int)Math.Round(p1.Value) + "%") : "--";
+                                w.ValP.ForeColor = c1;
+                                w.ValS.Text = g2 != null ? (p2.HasValue ? ((int)Math.Round(p2.Value) + "%") : "--") : "";
+                                w.ValS.ForeColor = c2;
+                                w.RstP.Text = g1.EarliestResetAt.HasValue ? FormatUtil.FmtResetShort(g1.EarliestResetAt) : "";
+                                w.RstS.Text = g2 != null && g2.EarliestResetAt.HasValue ? FormatUtil.FmtResetShort(g2.EarliestResetAt) : "";
+                            }
+                            else
+                            {
+                                QuotaBucket b1 = (ad.Buckets != null && ad.Buckets.Count >= 1) ? ad.Buckets[0] : null;
+                                QuotaBucket b2 = (ad.Buckets != null && ad.Buckets.Count >= 2) ? ad.Buckets[1] : null;
+                                w.TagP.Text = b1 != null ? (b1.ShortLabel ?? "Gem") : "AGY";
+                                w.TagS.Text = b2 != null ? (b2.ShortLabel ?? "Cld") : "";
+                                double? p1 = b1 != null ? b1.RemainingPct : null;
+                                double? p2 = b2 != null ? b2.RemainingPct : null;
+                                Color c1 = Theme.ColorFor(p1);
+                                Color c2 = Theme.ColorFor(p2);
+                                w.BarP.SetValue(p1, c1);
+                                w.BarS.SetValue(p2, c2);
+                                w.ValP.Text = p1.HasValue ? ((int)Math.Round(p1.Value) + "%") : "--";
+                                w.ValP.ForeColor = c1;
+                                w.ValS.Text = b2 != null ? (p2.HasValue ? ((int)Math.Round(p2.Value) + "%") : "--") : "";
+                                w.ValS.ForeColor = c2;
+                                w.RstP.Text = b1 != null && b1.ResetAt.HasValue ? FormatUtil.FmtResetShort(b1.ResetAt) : "";
+                                w.RstS.Text = b2 != null && b2.ResetAt.HasValue ? FormatUtil.FmtResetShort(b2.ResetAt) : "";
+                            }
+                        }
+                        else
+                        {
+                            w.TagP.Text = "5h";
+                            w.TagS.Text = "周";
+                            double? pr = ad.PRemaining;
+                            double? sr = ad.SRemaining;
+                            Color pc = Theme.ColorFor(pr);
+                            Color sc = Theme.ColorFor(sr);
+                            w.BarP.SetValue(pr, pc);
+                            w.BarS.SetValue(sr, sc);
+                            w.ValP.Text = pr.HasValue ? ((int)Math.Round(pr.Value) + "%") : "--";
+                            w.ValP.ForeColor = pc;
+                            w.ValS.Text = sr.HasValue ? ((int)Math.Round(sr.Value) + "%") : "--";
+                            w.ValS.ForeColor = sc;
+                            w.RstP.Text = FormatUtil.FmtResetShort(ad.PResetAt);
+                            w.RstS.Text = FormatUtil.FmtResetShort(ad.SResetAt);
+                        }
                     }
                     else
                     {
@@ -1836,7 +2120,8 @@ namespace CodexUsageMonitor
                         w.BarP.SetValue(null, Theme.Track);
                         w.BarS.SetValue(null, Theme.Track);
                         bool isBad = akind == "auth" || a.AuthBad;
-                        w.ValP.Text = isBad ? "需重新登录" : (!string.IsNullOrEmpty(aerr) ? "获取失败" : "加载中…");
+                        bool isOffline = akind == "offline";
+                        w.ValP.Text = isBad ? "需重新登录" : (isOffline ? "未运行" : (!string.IsNullOrEmpty(aerr) ? "获取失败" : "加载中…"));
                         w.ValP.ForeColor = isBad ? Theme.Red : Theme.Sub;
                         w.ValS.Text = "--";
                         w.ValS.ForeColor = Theme.Sub;
@@ -1923,6 +2208,12 @@ namespace CodexUsageMonitor
                     _lblTimeS.Text = ph; _lblTimeS.ForeColor = Theme.Sub;
                 }
 
+                else if (_agyBucketsPanel != null)
+                {
+                    SetBadges("", null);
+                    RenderAgyBuckets(d, err, errKind);
+                }
+
                 if (_lblCreditWarn != null && _lblCreditWarn.Visible != showCreditWarn)
                 {
                     _lblCreditWarn.Visible = showCreditWarn;
@@ -1961,6 +2252,11 @@ namespace CodexUsageMonitor
                         _lblFoot.Text = "⚠ 会话已失效 · 点此重新登录";
                         _lblFoot.ForeColor = Theme.Red;
                     }
+                    else if (errKind == "offline")
+                    {
+                        _lblFoot.Text = "● " + (!string.IsNullOrEmpty(err) ? err : "Antigravity 未运行");
+                        _lblFoot.ForeColor = Theme.Sub;
+                    }
                     else
                     {
                         _lblFoot.Text = !string.IsNullOrEmpty(err) ? ("⚠ " + err) : "正在获取数据…";
@@ -1978,10 +2274,27 @@ namespace CodexUsageMonitor
             _lblHint.Text = string.Format("每 {0}s", Config.interval);
             _lblHint.ForeColor = Theme.Muted;
 
-            // 同步刷新任务栏常驻实时条
+            // 同步刷新任务栏常驻实时条 (支持双平台同屏 + 跟随当前)
             if (_taskbarWidget != null && !_taskbarWidget.IsDisposed)
             {
-                _taskbarWidget.UpdateData(ViewAccount != null ? ViewAccount.DisplayName : "", d, err, errKind);
+                AccountInfo cdxAcct = PickPlatformAccount(ProviderKind.Codex, snap);
+                AccountInfo agyAcct = Config.enable_antigravity ? PickPlatformAccount(ProviderKind.Antigravity, snap) : null;
+                FetchResult cdxFr = null;
+                FetchResult agyFr = null;
+                if (cdxAcct != null) snap.TryGetValue(cdxAcct.Home, out cdxFr);
+                if (agyAcct != null) snap.TryGetValue(agyAcct.Home, out agyFr);
+
+                _taskbarWidget.UpdateData(
+                    Config.taskbar_mode,
+                    ViewAccount != null ? ViewAccount.DisplayName : "", d, err, errKind,
+                    cdxAcct != null ? cdxAcct.DisplayName : null,
+                    cdxFr != null ? cdxFr.Data : null,
+                    cdxFr != null ? cdxFr.Error : null,
+                    cdxFr != null ? cdxFr.ErrorKind : (cdxAcct != null && cdxAcct.AuthBad ? "auth" : null),
+                    agyAcct != null ? agyAcct.DisplayName : null,
+                    agyFr != null ? agyFr.Data : null,
+                    agyFr != null ? agyFr.Error : null,
+                    agyFr != null ? agyFr.ErrorKind : (agyAcct != null && agyAcct.AuthBad ? "auth" : null));
             }
 
             // 更新托盘图标与悬停提示 (NotifyIcon.Text 上限 63 字符)
@@ -2001,6 +2314,189 @@ namespace CodexUsageMonitor
             catch { }
         }
 
+        private AccountInfo PickPlatformAccount(ProviderKind provider, Dictionary<string, FetchResult> snap)
+        {
+            if (ViewAccount != null && ViewAccount.Provider == provider)
+                return ViewAccount;
+            AccountInfo first = null;
+            AccountInfo withData = null;
+            foreach (AccountInfo a in Accounts)
+            {
+                if (a.Provider != provider) continue;
+                if (first == null) first = a;
+                if (provider == ProviderKind.Codex && a.Live) return a;
+                FetchResult fr;
+                if (withData == null && snap.TryGetValue(a.Home, out fr) && fr != null && fr.Data != null)
+                    withData = a;
+            }
+            return withData ?? first;
+        }
+
+        private void RenderAgyBuckets(UsageData d, string err, string errKind)
+        {
+            if (_agyBucketsPanel == null || _agyBucketsPanel.IsDisposed) return;
+
+            StringBuilder keySb = new StringBuilder();
+            if (d != null)
+            {
+                keySb.Append("OK|").Append(d.Plan ?? "").Append("|").Append(d.CreditsBalance ?? "").Append("|");
+                if (d.Buckets != null)
+                {
+                    foreach (QuotaBucket b in d.Buckets)
+                        keySb.Append(b.Id).Append(":").Append(b.RemainingPct.HasValue ? ((int)Math.Round(b.RemainingPct.Value)).ToString() : "-").Append(":").Append(FormatUtil.FmtResetShort(b.ResetAt)).Append(";");
+                }
+            }
+            else
+            {
+                keySb.Append("ERR|").Append(errKind ?? "").Append("|").Append(err ?? "");
+            }
+
+            if (_lblAgyPlan != null)
+            {
+                string pt = d != null ? (d.Plan ?? "").ToUpperInvariant() : "";
+                _lblAgyPlan.Text = pt;
+                _lblAgyPlan.Visible = !string.IsNullOrEmpty(pt);
+            }
+            if (_lblAgySource != null && ViewAccount != null)
+            {
+                _lblAgySource.Text = ViewAccount.IsAgyLocal ? "● 本机自动读取" : "☁ 云端 Google 账号";
+            }
+
+            string newKey = keySb.ToString();
+            if (newKey == _lastAgyRenderKey) return;
+            _lastAgyRenderKey = newKey;
+
+            _agyBucketsPanel.SuspendLayout();
+            while (_agyBucketsPanel.Controls.Count > 0)
+                _agyBucketsPanel.Controls[0].Dispose();
+
+            int panelW = WindowWidth - 26;
+            _agyBucketsPanel.AutoScroll = false;
+            int y = 2;
+            if (d != null && d.Groups != null && d.Groups.Count > 0)
+            {
+                foreach (QuotaGroup g in d.Groups)
+                {
+                    int rows = Math.Max(1, g.Buckets.Count);
+                    int cardH = 26 + rows * 22 + 4;
+                    Panel cardWrap = new Panel
+                    {
+                        BackColor = Theme.Border,
+                        Location = UiPoint(0, y),
+                        Size = UiSize(panelW, cardH)
+                    };
+                    Panel card = new Panel
+                    {
+                        BackColor = Theme.Card,
+                        Location = UiPoint(1, 1),
+                        Size = UiSize(panelW - 2, cardH - 2)
+                    };
+                    Renderer.RoundControl(cardWrap, UiPx(8));
+                    Renderer.RoundControl(card, UiPx(7));
+                    cardWrap.Controls.Add(card);
+
+                    Label grpLbl = new Label
+                    {
+                        Text = g.DisplayName,
+                        ForeColor = Theme.Text,
+                        Font = Fonts.Name,
+                        AutoSize = false,
+                        AutoEllipsis = true,
+                        UseMnemonic = false,
+                        Location = UiPoint(9, 5),
+                        Size = UiSize(panelW - 20, 18)
+                    };
+                    card.Controls.Add(grpLbl);
+
+                    int ry = 26;
+                    foreach (QuotaBucket b in g.Buckets)
+                    {
+                        Color c = Theme.ColorFor(b.RemainingPct);
+                        Label wLbl = new Label
+                        {
+                            Text = b.ShortLabel ?? "限额",
+                            ForeColor = Theme.Sub,
+                            Font = Fonts.Pill,
+                            AutoSize = false,
+                            Location = UiPoint(9, ry),
+                            Size = UiSize(30, 16)
+                        };
+                        MiniBarControl bar = new MiniBarControl
+                        {
+                            Location = UiPoint(40, ry + 4),
+                            Size = UiSize(128, 7)
+                        };
+                        bar.SetValue(b.RemainingPct, c);
+                        Label valLbl = new Label
+                        {
+                            Text = b.RemainingPct.HasValue ? string.Format("{0}%", (int)Math.Round(b.RemainingPct.Value)) : "--",
+                            ForeColor = c,
+                            Font = Fonts.Pill,
+                            AutoSize = false,
+                            TextAlign = ContentAlignment.MiddleRight,
+                            Size = UiSize(38, 16),
+                            Location = UiPoint(172, ry)
+                        };
+                        string rstTxt = b.ResetAt.HasValue ? (FormatUtil.FmtResetShort(b.ResetAt) + " 重置") : "";
+                        Label rstLbl = new Label
+                        {
+                            Text = rstTxt,
+                            ForeColor = (b.RemainingPct.HasValue && b.RemainingPct.Value < 20) ? c : Theme.Muted,
+                            Font = Fonts.Tiny,
+                            AutoSize = false,
+                            TextAlign = ContentAlignment.MiddleRight,
+                            Size = UiSize(panelW - 220, 16),
+                            Location = UiPoint(212, ry)
+                        };
+                        card.Controls.Add(wLbl);
+                        card.Controls.Add(bar);
+                        card.Controls.Add(valLbl);
+                        card.Controls.Add(rstLbl);
+                        ry += 22;
+                    }
+
+                    _agyBucketsPanel.Controls.Add(cardWrap);
+                    y += cardH + 6;
+                }
+            }
+            else
+            {
+                bool isBad = errKind == "auth" || (ViewAccount != null && ViewAccount.AuthBad);
+                bool isOffline = errKind == "offline";
+                string msg = isBad
+                    ? "Google 授权已失效\r\n点击底栏重新登录"
+                    : (isOffline
+                        ? "未检测到运行中的 Antigravity\r\n打开客户端后将自动读取，或添加云端账号"
+                        : (!string.IsNullOrEmpty(err) ? err : "正在获取 Antigravity 额度…"));
+                Label ph = new Label
+                {
+                    Text = msg,
+                    ForeColor = isBad ? Theme.Red : Theme.Sub,
+                    Font = Fonts.Sub,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Location = UiPoint(0, 6),
+                    Size = UiSize(panelW, 74)
+                };
+                _agyBucketsPanel.Controls.Add(ph);
+                y = 84;
+            }
+
+            _agyBucketsPanel.Height = UiPx(y);
+            Control metaRow = _cardsHost.Controls["agyMetaRow"];
+            if (metaRow != null)
+            {
+                metaRow.Top = _agyBucketsPanel.Bottom + UiPx(4);
+                _cardsHost.Height = metaRow.Bottom + UiPx(2);
+            }
+            else
+            {
+                _cardsHost.Height = _agyBucketsPanel.Bottom + UiPx(4);
+            }
+            _agyBucketsPanel.ResumeLayout(true);
+            BindInteractions(_agyBucketsPanel);
+            FitHeight();
+        }
+
         private string BuildTrayTooltip(Dictionary<string, FetchResult> snap, UsageData d, string err)
         {
             if (Accounts.Count > 1)
@@ -2015,14 +2511,24 @@ namespace CodexUsageMonitor
                     string nm = FormatUtil.Ellipsize(a.DisplayName, 8);
                     if (ad != null)
                     {
-                        sb.AppendFormat("{0}: 5h {1}% 周 {2}%",
-                            nm,
-                            ad.PRemaining.HasValue ? ((int)Math.Round(ad.PRemaining.Value)).ToString() : "-",
-                            ad.SRemaining.HasValue ? ((int)Math.Round(ad.SRemaining.Value)).ToString() : "-");
+                        if (a.Provider == ProviderKind.Antigravity)
+                        {
+                            sb.AppendFormat("[AGY]{0}: 剩{1}%",
+                                nm,
+                                ad.MinRemaining.HasValue ? ((int)Math.Round(ad.MinRemaining.Value)).ToString() : "-");
+                        }
+                        else
+                        {
+                            sb.AppendFormat("{0}: 5h {1}% 周 {2}%",
+                                nm,
+                                ad.PRemaining.HasValue ? ((int)Math.Round(ad.PRemaining.Value)).ToString() : "-",
+                                ad.SRemaining.HasValue ? ((int)Math.Round(ad.SRemaining.Value)).ToString() : "-");
+                        }
                     }
                     else
                     {
-                        sb.AppendFormat("{0}: {1}", nm, a.AuthBad ? "需重登" : "加载中");
+                        string st = (afr != null && afr.ErrorKind == "offline") ? "离线" : (a.AuthBad ? "需重登" : "加载中");
+                        sb.AppendFormat("{0}: {1}", nm, st);
                     }
                 }
                 return sb.ToString();
@@ -2038,6 +2544,41 @@ namespace CodexUsageMonitor
         }
 
         // ---------------- 后台轮询 ----------------
+        private void StartShowEventWatcher()
+        {
+            try
+            {
+                _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "CodexUsageTray_ShowEvent");
+                Thread wt = new Thread((ThreadStart)delegate
+                {
+                    while (!_stop.IsSet && _showEvent != null)
+                    {
+                        try
+                        {
+                            if (!_showEvent.WaitOne(1000)) continue;
+                            if (_stop.IsSet) break;
+                            RunUi(delegate
+                            {
+                                if (!Visible) Show();
+                                if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+                                ClampToScreen();
+                                TopMost = false;
+                                TopMost = true;
+                                BringToFront();
+                                Activate();
+                                NativeWin.SetForegroundWindow(Handle);
+                                Logger.Log(string.Format("收到唤醒信号: Loc=({0},{1}) Size=({2}x{3}) Vis={4}", Left, Top, Width, Height, Visible));
+                            });
+                        }
+                        catch { break; }
+                    }
+                });
+                wt.IsBackground = true;
+                wt.Start();
+            }
+            catch { }
+        }
+
         private void KickPoll()
         {
             _wake.Set();
@@ -2096,6 +2637,7 @@ namespace CodexUsageMonitor
                 hasPending = _pendingLogins.Count > 0;
                 foreach (AccountInfo a in accts)
                 {
+                    if (a.Provider != ProviderKind.Codex) continue;
                     long mt;
                     if (_reloginWatch.TryGetValue(a.Home, out mt)) watches[a.Home] = mt;
                     else if (a.AuthBad) watches[a.Home] = CodexApi.AuthMtimeTicks(a.Home);
@@ -2153,26 +2695,42 @@ namespace CodexUsageMonitor
                 foreach (AccountInfo acct in accts)
                 {
                     if (_stop.IsSet) return;
-                    if (curView != null && acct.Uid != curView.Uid && CodexApi.IsInCooldownUnchanged(acct.Home))
+                    if (acct.Provider == ProviderKind.Codex && curView != null && acct.Uid != curView.Uid && CodexApi.IsInCooldownUnchanged(acct.Home))
                         continue;
 
                     FetchResult res = new FetchResult();
                     try
                     {
-                        UsageData data = CodexApi.FetchUsage(acct.Home);
+                        UsageData data = acct.Provider == ProviderKind.Antigravity
+                            ? AntigravityApi.FetchUsage(acct, Config)
+                            : CodexApi.FetchUsage(acct.Home);
                         res.Data = data;
-                        CodexApi.MarkAuthState(acct.Home, true);
+                        if (acct.Provider == ProviderKind.Antigravity)
+                            AntigravityApi.MarkAuthState(acct.Home, true);
+                        else
+                            CodexApi.MarkAuthState(acct.Home, true);
                         lock (_lock) { _reloginWatch.Remove(acct.Home); }
                         if (acct.AuthBad) needRerender = true;
                         if (acct.Live && _liveAuthBad) { _liveAuthBad = false; needRerender = true; }
+                        if (acct.IsAgyLocal && data != null && !string.IsNullOrEmpty(data.Nick) && string.IsNullOrEmpty(acct.Email))
+                            needRerender = true;
                         CheckLowQuotaNotify(acct, data);
+                    }
+                    catch (OfflineException ex)
+                    {
+                        res.Data = null;
+                        res.Error = ex.Message;
+                        res.ErrorKind = "offline";
                     }
                     catch (AuthException ex)
                     {
                         res.Data = null;
                         res.Error = ex.Message;
                         res.ErrorKind = "auth";
-                        CodexApi.MarkAuthState(acct.Home, false);
+                        if (acct.Provider == ProviderKind.Antigravity)
+                            AntigravityApi.MarkAuthState(acct.Home, false);
+                        else
+                            CodexApi.MarkAuthState(acct.Home, false);
                         if (acct.Live) _liveAuthBad = true;
                         needRerender = true;
                         Logger.Log("fetch[" + acct.DisplayName + "]: AuthException: " + ex.Message);

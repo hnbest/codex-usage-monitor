@@ -20,11 +20,28 @@ namespace CodexUsageMonitor
             using (Mutex mutex = new Mutex(true, "CodexUsageTray_Mutex", out createdNew))
             {
                 if (!createdNew)
+                {
+                    try
+                    {
+                        using (EventWaitHandle showEv = EventWaitHandle.OpenExisting("CodexUsageTray_ShowEvent"))
+                            showEv.Set();
+                    }
+                    catch { }
                     return;
+                }
 
                 NativeWin.EnableDpiAwareness();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e)
+                {
+                    Logger.Log("UI_EXCEPTION: " + e.Exception.ToString());
+                };
+                AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+                {
+                    Logger.Log("DOMAIN_EXCEPTION: " + Convert.ToString(e.ExceptionObject));
+                };
 
                 try
                 {

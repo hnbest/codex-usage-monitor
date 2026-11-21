@@ -53,6 +53,13 @@ namespace CodexUsageMonitor
             cfg.show_in_taskbar = JsonUtil.GetBool(d, "show_in_taskbar", true);
             int? tx = JsonUtil.GetInt(d, "taskbar_offset_x");
             if (tx.HasValue) cfg.taskbar_offset_x = tx.Value;
+            cfg.enable_antigravity = JsonUtil.GetBool(d, "enable_antigravity", true);
+            string tm = JsonUtil.GetStr(d, "taskbar_mode");
+            cfg.taskbar_mode = (tm == "follow") ? TaskbarDisplayMode.FollowCurrent : TaskbarDisplayMode.Dual;
+            string cid = JsonUtil.GetStr(d, "agy_oauth_client_id");
+            if (cid != null) cfg.agy_oauth_client_id = cid;
+            string csec = JsonUtil.GetStr(d, "agy_oauth_client_secret");
+            if (csec != null) cfg.agy_oauth_client_secret = csec;
             return cfg;
         }
 
@@ -72,6 +79,10 @@ namespace CodexUsageMonitor
                 d["notify_threshold"] = cfg.notify_threshold;
                 d["show_in_taskbar"] = cfg.show_in_taskbar;
                 d["taskbar_offset_x"] = cfg.taskbar_offset_x;
+                d["enable_antigravity"] = cfg.enable_antigravity;
+                d["taskbar_mode"] = cfg.taskbar_mode == TaskbarDisplayMode.FollowCurrent ? "follow" : "dual";
+                if (!string.IsNullOrEmpty(cfg.agy_oauth_client_id)) d["agy_oauth_client_id"] = cfg.agy_oauth_client_id;
+                if (!string.IsNullOrEmpty(cfg.agy_oauth_client_secret)) d["agy_oauth_client_secret"] = cfg.agy_oauth_client_secret;
                 JsonUtil.WriteAtomic(AppPaths.ConfigPath, d);
             }
             catch (Exception ex)

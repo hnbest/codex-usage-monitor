@@ -144,7 +144,7 @@ namespace CodexUsageMonitor
         private const uint ULW_ALPHA = 2;
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_LAYOUTRTL = 0x00400000;
-        private const int WidgetWidth = 138;
+        private const int WidgetWidth = 156;
         private const int PaddingBetweenItems = 4;
         private const int TTM_ADDTOOLW = 0x0432;
         private const int TTM_UPDATETIPTEXTW = 0x0439;
@@ -152,13 +152,24 @@ namespace CodexUsageMonitor
 
         private readonly MainForm _owner;
         private readonly System.Windows.Forms.Timer _keepTimer;
+        private readonly System.Windows.Forms.Timer _cycleTimer;
         private readonly NativeWindow _tip = new NativeWindow();
-        private string _tipText = "Codex 用量 - 加载中…";
+        private string _tipText = "Codex / AGY 用量 - 加载中…";
 
+        private TaskbarDisplayMode _mode = TaskbarDisplayMode.Dual;
+        private bool _showWeekly;
         private UsageData _data;
         private string _err;
         private string _errKind;
         private string _acctName = "";
+        private string _cdxName;
+        private UsageData _cdxData;
+        private string _cdxErr;
+        private string _cdxErrKind;
+        private string _agyName;
+        private UsageData _agyData;
+        private string _agyErr;
+        private string _agyErrKind;
         private bool _hover;
         private IntPtr _taskbar;
         private Rectangle _lastBar;
@@ -206,18 +217,130 @@ namespace CodexUsageMonitor
             _keepTimer = new System.Windows.Forms.Timer();
             _keepTimer.Interval = 400;
             _keepTimer.Tick += delegate { KeepOnTaskbar(); };
+
+            // 双平台同屏时每 4 秒自动在 5h 与 周 之间切换显示（鼠标悬停时暂停）
+            _cycleTimer = new System.Windows.Forms.Timer();
+            _cycleTimer.Interval = 4000;
+            _cycleTimer.Tick += delegate
+            {
+                if (_hover || !Visible) return;
+                if (_mode == TaskbarDisplayMode.Dual && _agyName != null)
+                {
+                    _showWeekly = !_showWeekly;
+                    _widgetNeedsPaint = true;
+                }
+            };
         }
 
-        public void UpdateData(string acctName, UsageData data, string err, string errKind)
+        public void UpdateData(
+            TaskbarDisplayMode mode,
+            string acctName, UsageData data, string err, string errKind,
+            string cdxName, UsageData cdxData, string cdxErr, string cdxErrKind,
+            string agyName, UsageData agyData, string agyErr, string agyErrKind)
         {
+            _mode = mode;
             _acctName = acctName ?? "";
             _data = data;
             _err = err;
             _errKind = errKind;
+            _cdxName = cdxName;
+            _cdxData = cdxData;
+            _cdxErr = cdxErr;
+            _cdxErrKind = cdxErrKind;
+            _agyName = agyName;
+            _agyData = agyData;
+            _agyErr = agyErr;
+            _agyErrKind = agyErrKind;
+
+            _tipText = BuildTooltip();
+            if (_tip.Handle != IntPtr.Zero)
+                SetToolTipText(TTM_UPDATETIPTEXTW);
+            _widgetNeedsPaint = true;
+        }
+
+        private string BuildTooltip()
+        {
+            if (_mode == TaskbarDisplayMode.Dual && _agyName != null)
+            {
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                if (_cdxData != null)
+                {
+                    sb.AppendFormat("[Codex] {0} ({1})\n  5h: 剩 {2}% · {3} 重置\n  周: 剩 {4}% · {5} 重置",
+                        _cdxName ?? "",
+                        (_cdxData.Plan ?? "").ToUpperInvariant(),
+                        _cdxData.PRemaining.HasValue ? ((int)Math.Round(_cdxData.PRemaining.Value)).ToString() : "-",
+                        FormatUtil.FmtResetShort(_cdxData.PResetAt),
+                        _cdxData.SRemaining.HasValue ? ((int)Math.Round(_cdxData.SRemaining.Value)).ToString() : "-",
+                        FormatUtil.FmtResetShort(_cdxData.SResetAt));
+                }
+                else if (_cdxName != null)
+                {
+                    sb.AppendFormat("[Codex] {0}: {1}", _cdxName, _cdxErrKind == "auth" ? "需重新登录" : (string.IsNullOrEmpty(_cdxErr) ? "加载中…" : _cdxErr));
+                }
+                else
+                {
+                    sb.Append("[Codex] 未登录");
+                }
+
+                sb.Append("\n");
+                if (_agyData != null)
+                {
+                    sb.AppendFormat("[AGY] {0} ({1})", _agyName, (_agyData.Plan ?? "AGY").ToUpperInvariant());
+                    if (_agyData.Groups != null && _agyData.Groups.Count > 0)
+                    {
+                        foreach (QuotaGroup g in _agyData.Groups)
+                        {
+                            sb.AppendFormat("\n  {0}:", g.DisplayName);
+                            foreach (QuotaBucket b in g.Buckets)
+                            {
+                                sb.AppendFormat(" {0} {1}%", b.ShortLabel ?? "", b.RemainingPct.HasValue ? ((int)Math.Round(b.RemainingPct.Value)).ToString() : "-");
+                            }
+                        }
+                    }
+                    else if (_agyData.Buckets != null && _agyData.Buckets.Count > 0)
+                    {
+                        foreach (QuotaBucket b in _agyData.Buckets)
+                        {
+                            sb.AppendFormat("\n  {0}: 剩 {1}%{2}",
+                                b.Label,
+                                b.RemainingPct.HasValue ? ((int)Math.Round(b.RemainingPct.Value)).ToString() : "-",
+                                b.ResetAt.HasValue ? (" · " + FormatUtil.FmtResetShort(b.ResetAt) + " 重置") : "");
+                        }
+                    }
+                    else
+                    {
+                        sb.Append("\n  暂无模型额度数据");
+                    }
+                }
+                else
+                {
+                    string st = _agyErrKind == "offline" ? "未运行" : (_agyErrKind == "auth" ? "需重新登录" : (string.IsNullOrEmpty(_agyErr) ? "加载中…" : _agyErr));
+                    sb.AppendFormat("[AGY] {0}: {1}", _agyName, st);
+                }
+                sb.Append("\n左键展开详情 · 右键菜单");
+                return sb.ToString();
+            }
 
             if (_data != null)
             {
-                _tipText = string.Format(
+                if (_data.Provider == ProviderKind.Antigravity)
+                {
+                    System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                    sb.AppendFormat("[AGY] {0} [{1}]", _acctName, (_data.Plan ?? "AGY").ToUpperInvariant());
+                    if (_data.Buckets != null)
+                    {
+                        foreach (QuotaBucket b in _data.Buckets)
+                        {
+                            sb.AppendFormat("\n{0}: 剩 {1}%{2}",
+                                b.Label,
+                                b.RemainingPct.HasValue ? ((int)Math.Round(b.RemainingPct.Value)).ToString() : "-",
+                                b.ResetAt.HasValue ? (" · " + FormatUtil.FmtResetShort(b.ResetAt) + " 重置") : "");
+                        }
+                    }
+                    sb.Append("\n左键展开详情 · 右键菜单");
+                    return sb.ToString();
+                }
+                return string.Format(
                     "{0} [{1}]\n5小时: 剩 {2}% · {3} 重置\n每周: 剩 {4}% · {5} 重置\n左键展开详情 · 右键菜单",
                     _acctName,
                     (_data.Plan ?? "").ToUpperInvariant(),
@@ -226,17 +349,11 @@ namespace CodexUsageMonitor
                     _data.SRemaining.HasValue ? ((int)Math.Round(_data.SRemaining.Value)).ToString() : "-",
                     FormatUtil.FmtResetShort(_data.SResetAt));
             }
-            else if (_errKind == "auth")
-            {
-                _tipText = _acctName + "\n会话已失效，点击打开窗口重新登录";
-            }
-            else
-            {
-                _tipText = string.IsNullOrEmpty(_err) ? "Codex 用量 - 加载中…" : ("Codex 用量\n" + _err);
-            }
-            if (_tip.Handle != IntPtr.Zero)
-                SetToolTipText(TTM_UPDATETIPTEXTW);
-            _widgetNeedsPaint = true;
+            if (_errKind == "auth")
+                return _acctName + "\n会话已失效，点击打开窗口重新登录";
+            if (_errKind == "offline")
+                return _acctName + "\n未检测到运行中的 Antigravity";
+            return string.IsNullOrEmpty(_err) ? "Codex / AGY 用量 - 加载中…" : (_acctName + "\n" + _err);
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -287,11 +404,13 @@ namespace CodexUsageMonitor
             if (enabled)
             {
                 _keepTimer.Start();
+                _cycleTimer.Start();
                 KeepOnTaskbar();
             }
             else
             {
                 _keepTimer.Stop();
+                _cycleTimer.Stop();
                 Hide();
             }
         }
@@ -569,6 +688,35 @@ namespace CodexUsageMonitor
             }
         }
 
+        private static double? PickAgyWindowPct(UsageData agyData, bool weekly)
+        {
+            if (agyData == null) return null;
+            string target = weekly ? "周" : "5h";
+            double? min = null;
+            if (agyData.Groups != null && agyData.Groups.Count > 0)
+            {
+                foreach (QuotaGroup g in agyData.Groups)
+                {
+                    foreach (QuotaBucket b in g.Buckets)
+                    {
+                        if (b.ShortLabel != target || !b.RemainingPct.HasValue) continue;
+                        if (!min.HasValue || b.RemainingPct.Value < min.Value)
+                            min = b.RemainingPct.Value;
+                    }
+                }
+            }
+            else if (agyData.Buckets != null)
+            {
+                foreach (QuotaBucket b in agyData.Buckets)
+                {
+                    if (b.ShortLabel != target || !b.RemainingPct.HasValue) continue;
+                    if (!min.HasValue || b.RemainingPct.Value < min.Value)
+                        min = b.RemainingPct.Value;
+                }
+            }
+            return min.HasValue ? min : agyData.MinRemaining;
+        }
+
         private void PaintWidget(Graphics g, Size size)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -585,11 +733,44 @@ namespace CodexUsageMonitor
                 g.DrawPath(p, frame);
             }
 
-            if (_data != null)
+            if (_mode == TaskbarDisplayMode.Dual && _agyName != null)
             {
                 int rowH = size.Height / 2;
-                DrawRow(g, "5h", _data.PRemaining, 2, rowH - 2, size.Width);
-                DrawRow(g, "周", _data.SRemaining, rowH, size.Height - rowH - 2, size.Width);
+                string winTag = _showWeekly ? "周" : "5h";
+                double? cdxPct = _cdxData != null
+                    ? (_showWeekly ? (_cdxData.SRemaining ?? _cdxData.PRemaining) : (_cdxData.PRemaining ?? _cdxData.SRemaining))
+                    : null;
+                string cdxFallback = _cdxName == null ? "未登" : (_cdxErrKind == "auth" ? "重登" : "--");
+                Color cdxFbColor = _cdxErrKind == "auth" ? Theme.Red : Theme.Sub;
+                DrawRow(g, "C·" + winTag, cdxPct, 2, rowH - 2, size.Width, cdxFallback, cdxFbColor);
+
+                double? agyPct = PickAgyWindowPct(_agyData, _showWeekly);
+                string agyFallback = _agyErrKind == "offline" ? "离线" : (_agyErrKind == "auth" ? "重登" : "--");
+                Color agyFbColor = _agyErrKind == "auth" ? Theme.Red : Theme.Sub;
+                DrawRow(g, "A·" + winTag, agyPct, rowH, size.Height - rowH - 2, size.Width, agyFallback, agyFbColor);
+            }
+            else if (_data != null)
+            {
+                int rowH = size.Height / 2;
+                if (_data.Provider == ProviderKind.Antigravity && _data.Groups != null && _data.Groups.Count > 0)
+                {
+                    QuotaGroup g1 = _data.Groups[0];
+                    DrawRow(g, g1.ShortName ?? "Gem", g1.MinRemaining, 2, rowH - 2, size.Width, "--", Theme.Sub);
+                    if (_data.Groups.Count >= 2)
+                    {
+                        QuotaGroup g2 = _data.Groups[1];
+                        DrawRow(g, g2.ShortName ?? "Cld", g2.MinRemaining, rowH, size.Height - rowH - 2, size.Width, "--", Theme.Sub);
+                    }
+                    else
+                    {
+                        DrawRow(g, "AGY", g1.MinRemaining, rowH, size.Height - rowH - 2, size.Width, "--", Theme.Sub);
+                    }
+                }
+                else
+                {
+                    DrawRow(g, "5h", _data.PRemaining, 2, rowH - 2, size.Width, "--", Theme.Sub);
+                    DrawRow(g, "周", _data.SRemaining, rowH, size.Height - rowH - 2, size.Width, "--", Theme.Sub);
+                }
             }
             else if (_errKind == "auth")
             {
@@ -597,26 +778,32 @@ namespace CodexUsageMonitor
                 using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
                     g.DrawString("⚠ 需重新登录", _fMsg, br, client, sf);
             }
+            else if (_errKind == "offline")
+            {
+                using (SolidBrush br = new SolidBrush(Theme.Sub))
+                using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                    g.DrawString("AGY 未运行", _fMsg, br, client, sf);
+            }
             else
             {
                 using (SolidBrush br = new SolidBrush(Theme.Sub))
                 using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    g.DrawString("Codex …", _fMsg, br, client, sf);
+                    g.DrawString("加载中…", _fMsg, br, client, sf);
             }
         }
 
-        private void DrawRow(Graphics g, string label, double? pct, int y, int h, int width)
+        private void DrawRow(Graphics g, string label, double? pct, int y, int h, int width, string fallbackText, Color fallbackColor)
         {
-            Color c = Theme.ColorFor(pct);
+            Color c = pct.HasValue ? Theme.ColorFor(pct) : fallbackColor;
             using (SolidBrush subBr = new SolidBrush(Theme.Sub))
-            using (StringFormat sfLeft = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center })
+            using (StringFormat sfLeft = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
             {
-                g.DrawString(label, _fLbl, subBr, new RectangleF(7, y, 22, h), sfLeft);
+                g.DrawString(label, _fLbl, subBr, new RectangleF(6, y, 42, h), sfLeft);
             }
 
             // 迷你进度条
-            float barX = 28f;
-            float barW = 46f;
+            float barX = 48f;
+            float barW = 48f;
             float barH = 5f;
             float barY = y + (h - barH) / 2f;
             using (GraphicsPath tr = Renderer.RoundedRect(new RectangleF(barX, barY, barW, barH), 2.5f))
@@ -635,11 +822,11 @@ namespace CodexUsageMonitor
                 }
             }
 
-            string val = pct.HasValue ? string.Format("{0}%", (int)Math.Round(pct.Value)) : "--";
+            string val = pct.HasValue ? string.Format("{0}%", (int)Math.Round(pct.Value)) : fallbackText;
             using (SolidBrush valBr = new SolidBrush(c))
             using (StringFormat sfRight = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
             {
-                g.DrawString(val, _fVal, valBr, new RectangleF(76, y, width - 82, h), sfRight);
+                g.DrawString(val, _fVal, valBr, new RectangleF(98, y, width - 104, h), sfRight);
             }
         }
 
@@ -649,6 +836,8 @@ namespace CodexUsageMonitor
             {
                 _keepTimer.Stop();
                 _keepTimer.Dispose();
+                _cycleTimer.Stop();
+                _cycleTimer.Dispose();
                 _fLbl.Dispose();
                 _fVal.Dispose();
                 _fMsg.Dispose();

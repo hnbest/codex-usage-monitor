@@ -17,6 +17,7 @@ $manifestPath = Join-Path $srcDir 'app.manifest'
 $sources = @(
     (Join-Path $srcDir 'Models.cs'),
     (Join-Path $srcDir 'CodexApi.cs'),
+    (Join-Path $srcDir 'AntigravityApi.cs'),
     (Join-Path $srcDir 'Renderer.cs'),
     (Join-Path $srcDir 'TaskbarWidgetForm.cs'),
     (Join-Path $srcDir 'SettingsForm.cs'),
@@ -96,6 +97,7 @@ using System.Reflection;
                 /r:System.Drawing.dll `
                 /r:System.Windows.Forms.dll `
                 /r:System.Web.Extensions.dll `
+                /r:System.Management.dll `
                 "/r:$wpfDir\UIAutomationClient.dll" `
                 "/r:$wpfDir\UIAutomationTypes.dll" `
                 "/r:$wpfDir\WindowsBase.dll" `

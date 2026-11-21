@@ -39,6 +39,18 @@ namespace CodexUsageMonitor
         Large
     }
 
+    public enum ProviderKind
+    {
+        Codex,
+        Antigravity
+    }
+
+    public enum TaskbarDisplayMode
+    {
+        Dual,
+        FollowCurrent
+    }
+
     public class AppConfig
     {
         public double alpha = 0.80;
@@ -52,17 +64,28 @@ namespace CodexUsageMonitor
         public int notify_threshold = 20;
         public bool show_in_taskbar = true;
         public int taskbar_offset_x = 0;
+        public bool enable_antigravity = true;
+        public TaskbarDisplayMode taskbar_mode = TaskbarDisplayMode.Dual;
+        public string agy_oauth_client_id = "";
+        public string agy_oauth_client_secret = "";
     }
 
     public class AccountInfo
     {
+        public ProviderKind Provider = ProviderKind.Codex;
         public string Nick;
         public string Email;
         public string Uid;
         public string Home;
         public bool Live;
+        public bool IsAgyLocal;
         public string Label;
         public bool AuthBad;
+
+        public string ProviderTag
+        {
+            get { return Provider == ProviderKind.Antigravity ? "AGY" : "CDX"; }
+        }
 
         public string DisplayName
         {
@@ -71,7 +94,55 @@ namespace CodexUsageMonitor
                 if (!string.IsNullOrEmpty(Label)) return Label;
                 if (!string.IsNullOrEmpty(Email)) return Email;
                 if (!string.IsNullOrEmpty(Nick)) return Nick;
-                return "账号";
+                return Provider == ProviderKind.Antigravity ? "Antigravity" : "账号";
+            }
+        }
+    }
+
+    public class QuotaBucket
+    {
+        public string Id;
+        public string Label;
+        public string ShortLabel;
+        public double? RemainingPct;
+        public double? ResetAt;
+        public double? ResetLeft;
+        public bool IsExhausted;
+    }
+
+    public class QuotaGroup
+    {
+        public string DisplayName;
+        public string ShortName;
+        public List<QuotaBucket> Buckets = new List<QuotaBucket>();
+
+        public double? MinRemaining
+        {
+            get
+            {
+                double? min = null;
+                foreach (QuotaBucket b in Buckets)
+                {
+                    if (!b.RemainingPct.HasValue) continue;
+                    if (!min.HasValue || b.RemainingPct.Value < min.Value)
+                        min = b.RemainingPct.Value;
+                }
+                return min;
+            }
+        }
+
+        public double? EarliestResetAt
+        {
+            get
+            {
+                double? min = null;
+                foreach (QuotaBucket b in Buckets)
+                {
+                    if (!b.ResetAt.HasValue) continue;
+                    if (!min.HasValue || b.ResetAt.Value < min.Value)
+                        min = b.ResetAt.Value;
+                }
+                return min;
             }
         }
     }
@@ -84,9 +155,11 @@ namespace CodexUsageMonitor
 
     public class UsageData
     {
+        public ProviderKind Provider = ProviderKind.Codex;
         public string Home;
         public string Plan;
         public string Nick;
+        public string SourceHint;
         public double? SubUntil;
         public double? SubStart;
         public double? PUsed;
@@ -95,6 +168,8 @@ namespace CodexUsageMonitor
         public double? SUsed;
         public double? SResetAt;
         public double? SLeft;
+        public List<QuotaGroup> Groups;
+        public List<QuotaBucket> Buckets;
         public int? Credits;
         public int? ApplicableCredits;
         public List<ResetCredit> ResetCredits;
@@ -106,13 +181,34 @@ namespace CodexUsageMonitor
 
         public double? PRemaining { get { return PUsed.HasValue ? (double?)(100.0 - PUsed.Value) : null; } }
         public double? SRemaining { get { return SUsed.HasValue ? (double?)(100.0 - SUsed.Value) : null; } }
+
+        public double? MinRemaining
+        {
+            get
+            {
+                if (Provider == ProviderKind.Antigravity && Buckets != null && Buckets.Count > 0)
+                {
+                    double? min = null;
+                    foreach (QuotaBucket b in Buckets)
+                    {
+                        if (!b.RemainingPct.HasValue) continue;
+                        if (!min.HasValue || b.RemainingPct.Value < min.Value)
+                            min = b.RemainingPct.Value;
+                    }
+                    if (min.HasValue) return min;
+                }
+                if (PRemaining.HasValue && SRemaining.HasValue)
+                    return Math.Min(PRemaining.Value, SRemaining.Value);
+                return PRemaining.HasValue ? PRemaining : SRemaining;
+            }
+        }
     }
 
     public class FetchResult
     {
         public UsageData Data;
         public string Error;
-        public string ErrorKind; // null | "auth" | "net"
+        public string ErrorKind; // null | "auth" | "net" | "offline"
     }
 
     public class AuthException : Exception
@@ -126,6 +222,7 @@ namespace CodexUsageMonitor
         public static readonly string ConfigPath;
         public static readonly string LogPath;
         public static readonly string AccountsDir;
+        public static readonly string AgyAccountsDir;
 
         static AppPaths()
         {
@@ -146,6 +243,7 @@ namespace CodexUsageMonitor
             ConfigPath = Path.Combine(DataDir, "config.json");
             LogPath = Path.Combine(DataDir, "codex_tray.log");
             AccountsDir = Path.Combine(DataDir, "accounts");
+            AgyAccountsDir = Path.Combine(DataDir, "agy_accounts");
         }
     }
 
@@ -289,6 +387,22 @@ namespace CodexUsageMonitor
             if (d == null || !d.ContainsKey(key)) return null;
             return d[key] as Dictionary<string, object>;
         }
+
+        public static List<object> GetList(Dictionary<string, object> d, string key)
+        {
+            if (d == null || !d.ContainsKey(key) || d[key] == null) return null;
+            object val = d[key];
+            object[] arr = val as object[];
+            if (arr != null) return new List<object>(arr);
+            System.Collections.ArrayList al = val as System.Collections.ArrayList;
+            if (al != null)
+            {
+                List<object> list = new List<object>(al.Count);
+                foreach (object item in al) list.Add(item);
+                return list;
+            }
+            return null;
+        }
     }
 
     public static class FormatUtil
@@ -298,6 +412,18 @@ namespace CodexUsageMonitor
         public static double NowUnix()
         {
             return (DateTime.UtcNow - UnixEpoch).TotalSeconds;
+        }
+
+        public static double? ParseIsoUnix(string iso)
+        {
+            if (string.IsNullOrEmpty(iso)) return null;
+            DateTime dt;
+            if (DateTime.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out dt))
+            {
+                return (dt.ToUniversalTime() - UnixEpoch).TotalSeconds;
+            }
+            return null;
         }
 
         public static DateTime FromUnixLocal(double epoch)
