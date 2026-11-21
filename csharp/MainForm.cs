@@ -70,6 +70,10 @@ namespace CodexUsageMonitor
         // 多账号总览卡片控件
         private class OverviewWidgets
         {
+            public Panel CardWrap;
+            public Panel Card;
+            public Panel AgyHost;
+            public string LastAgyKey;
             public Label Plan;
             public Label TagP;
             public MiniBarControl BarP;
@@ -1085,29 +1089,54 @@ namespace CodexUsageMonitor
                     top.Controls.Add(leftInfo);
                     card.Controls.Add(top);
 
-                    // 行 1
-                    Label tP = new Label { Text = isAgy ? "Pro" : "5h", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 29), Size = UiSize(30, 16) };
-                    MiniBarControl barP = new MiniBarControl { Location = UiPoint(40, 33), Size = UiSize(136, 7) };
-                    Label valP = new Label { Text = "--", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(182, 29), AutoSize = true };
-                    Label rstP = new Label { Text = "", ForeColor = Theme.Muted, Font = Fonts.Pill, Location = UiPoint(230, 29), Size = UiSize(cardW - 240, 16), TextAlign = ContentAlignment.TopRight };
-
-                    // 行 2
-                    Label tS = new Label { Text = isAgy ? "Fla" : "周", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 49), Size = UiSize(32, 16) };
-                    MiniBarControl barS = new MiniBarControl { Location = UiPoint(40, 53), Size = UiSize(136, 7) };
-                    Label valS = new Label { Text = "--", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(182, 49), AutoSize = true };
-                    Label rstS = new Label { Text = "", ForeColor = Theme.Muted, Font = Fonts.Pill, Location = UiPoint(230, 49), Size = UiSize(cardW - 240, 16), TextAlign = ContentAlignment.TopRight };
-
-                    card.Controls.Add(tP); card.Controls.Add(barP); card.Controls.Add(valP); card.Controls.Add(rstP);
-                    card.Controls.Add(tS); card.Controls.Add(barS); card.Controls.Add(valS); card.Controls.Add(rstS);
-
-                    _cardsHost.Controls.Add(cardWrap);
-                    _overviewCards[acct.Home] = new OverviewWidgets
+                    if (isAgy)
                     {
-                        Plan = planLbl,
-                        TagP = tP, BarP = barP, ValP = valP, RstP = rstP,
-                        TagS = tS, BarS = barS, ValS = valS, RstS = rstS
-                    };
-                    y += 80;
+                        Panel agyHost = new Panel
+                        {
+                            BackColor = Theme.Card,
+                            Location = UiPoint(0, 26),
+                            Size = UiSize(cardW - 2, 42)
+                        };
+                        card.Controls.Add(agyHost);
+                        _cardsHost.Controls.Add(cardWrap);
+                        _overviewCards[acct.Home] = new OverviewWidgets
+                        {
+                            CardWrap = cardWrap,
+                            Card = card,
+                            AgyHost = agyHost,
+                            LastAgyKey = "",
+                            Plan = planLbl
+                        };
+                        y += 80;
+                    }
+                    else
+                    {
+                        // 行 1
+                        Label tP = new Label { Text = "5h", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 29), Size = UiSize(30, 16) };
+                        MiniBarControl barP = new MiniBarControl { Location = UiPoint(40, 33), Size = UiSize(136, 7) };
+                        Label valP = new Label { Text = "--", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(182, 29), AutoSize = true };
+                        Label rstP = new Label { Text = "", ForeColor = Theme.Muted, Font = Fonts.Pill, Location = UiPoint(230, 29), Size = UiSize(cardW - 240, 16), TextAlign = ContentAlignment.TopRight };
+
+                        // 行 2
+                        Label tS = new Label { Text = "周", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(8, 49), Size = UiSize(32, 16) };
+                        MiniBarControl barS = new MiniBarControl { Location = UiPoint(40, 53), Size = UiSize(136, 7) };
+                        Label valS = new Label { Text = "--", ForeColor = Theme.Sub, Font = Fonts.Pill, Location = UiPoint(182, 49), AutoSize = true };
+                        Label rstS = new Label { Text = "", ForeColor = Theme.Muted, Font = Fonts.Pill, Location = UiPoint(230, 49), Size = UiSize(cardW - 240, 16), TextAlign = ContentAlignment.TopRight };
+
+                        card.Controls.Add(tP); card.Controls.Add(barP); card.Controls.Add(valP); card.Controls.Add(rstP);
+                        card.Controls.Add(tS); card.Controls.Add(barS); card.Controls.Add(valS); card.Controls.Add(rstS);
+
+                        _cardsHost.Controls.Add(cardWrap);
+                        _overviewCards[acct.Home] = new OverviewWidgets
+                        {
+                            CardWrap = cardWrap,
+                            Card = card,
+                            Plan = planLbl,
+                            TagP = tP, BarP = barP, ValP = valP, RstP = rstP,
+                            TagS = tS, BarS = barS, ValS = valS, RstS = rstS
+                        };
+                        y += 80;
+                    }
                 }
                 _cardsHost.Height = UiPx(y + 2);
             }
@@ -2039,6 +2068,7 @@ namespace CodexUsageMonitor
                     FitHeight();
                 }
                 double latestTs = 0;
+                bool overviewRelayout = false;
                 foreach (AccountInfo a in Accounts)
                 {
                     OverviewWidgets w;
@@ -2049,70 +2079,37 @@ namespace CodexUsageMonitor
                     string aerr = afr != null ? afr.Error : null;
                     string akind = afr != null ? afr.ErrorKind : null;
 
+                    if (a.Provider == ProviderKind.Antigravity && w.AgyHost != null)
+                    {
+                        if (ad != null && ad.Ts > latestTs) latestTs = ad.Ts;
+                        string planTxt = ad != null ? (ad.Plan ?? "").ToUpperInvariant() : "";
+                        w.Plan.Text = planTxt;
+                        w.Plan.Visible = !string.IsNullOrEmpty(planTxt);
+                        if (RenderOverviewAgyCard(w, a, ad, aerr, akind))
+                            overviewRelayout = true;
+                        continue;
+                    }
+
                     if (ad != null)
                     {
                         if (ad.Ts > latestTs) latestTs = ad.Ts;
                         string planTxt = (ad.Plan ?? "").ToUpperInvariant();
                         w.Plan.Text = planTxt;
                         w.Plan.Visible = !string.IsNullOrEmpty(planTxt);
-                        if (a.Provider == ProviderKind.Antigravity)
-                        {
-                            if (ad.Groups != null && ad.Groups.Count > 0)
-                            {
-                                QuotaGroup g1 = ad.Groups[0];
-                                QuotaGroup g2 = ad.Groups.Count >= 2 ? ad.Groups[1] : null;
-                                w.TagP.Text = g1.ShortName ?? "Gem";
-                                w.TagS.Text = g2 != null ? (g2.ShortName ?? "Cld") : "";
-                                double? p1 = g1.MinRemaining;
-                                double? p2 = g2 != null ? g2.MinRemaining : null;
-                                Color c1 = Theme.ColorFor(p1);
-                                Color c2 = Theme.ColorFor(p2);
-                                w.BarP.SetValue(p1, c1);
-                                w.BarS.SetValue(p2, c2);
-                                w.ValP.Text = p1.HasValue ? ((int)Math.Round(p1.Value) + "%") : "--";
-                                w.ValP.ForeColor = c1;
-                                w.ValS.Text = g2 != null ? (p2.HasValue ? ((int)Math.Round(p2.Value) + "%") : "--") : "";
-                                w.ValS.ForeColor = c2;
-                                w.RstP.Text = g1.EarliestResetAt.HasValue ? FormatUtil.FmtResetShort(g1.EarliestResetAt) : "";
-                                w.RstS.Text = g2 != null && g2.EarliestResetAt.HasValue ? FormatUtil.FmtResetShort(g2.EarliestResetAt) : "";
-                            }
-                            else
-                            {
-                                QuotaBucket b1 = (ad.Buckets != null && ad.Buckets.Count >= 1) ? ad.Buckets[0] : null;
-                                QuotaBucket b2 = (ad.Buckets != null && ad.Buckets.Count >= 2) ? ad.Buckets[1] : null;
-                                w.TagP.Text = b1 != null ? (b1.ShortLabel ?? "Gem") : "AGY";
-                                w.TagS.Text = b2 != null ? (b2.ShortLabel ?? "Cld") : "";
-                                double? p1 = b1 != null ? b1.RemainingPct : null;
-                                double? p2 = b2 != null ? b2.RemainingPct : null;
-                                Color c1 = Theme.ColorFor(p1);
-                                Color c2 = Theme.ColorFor(p2);
-                                w.BarP.SetValue(p1, c1);
-                                w.BarS.SetValue(p2, c2);
-                                w.ValP.Text = p1.HasValue ? ((int)Math.Round(p1.Value) + "%") : "--";
-                                w.ValP.ForeColor = c1;
-                                w.ValS.Text = b2 != null ? (p2.HasValue ? ((int)Math.Round(p2.Value) + "%") : "--") : "";
-                                w.ValS.ForeColor = c2;
-                                w.RstP.Text = b1 != null && b1.ResetAt.HasValue ? FormatUtil.FmtResetShort(b1.ResetAt) : "";
-                                w.RstS.Text = b2 != null && b2.ResetAt.HasValue ? FormatUtil.FmtResetShort(b2.ResetAt) : "";
-                            }
-                        }
-                        else
-                        {
-                            w.TagP.Text = "5h";
-                            w.TagS.Text = "周";
-                            double? pr = ad.PRemaining;
-                            double? sr = ad.SRemaining;
-                            Color pc = Theme.ColorFor(pr);
-                            Color sc = Theme.ColorFor(sr);
-                            w.BarP.SetValue(pr, pc);
-                            w.BarS.SetValue(sr, sc);
-                            w.ValP.Text = pr.HasValue ? ((int)Math.Round(pr.Value) + "%") : "--";
-                            w.ValP.ForeColor = pc;
-                            w.ValS.Text = sr.HasValue ? ((int)Math.Round(sr.Value) + "%") : "--";
-                            w.ValS.ForeColor = sc;
-                            w.RstP.Text = FormatUtil.FmtResetShort(ad.PResetAt);
-                            w.RstS.Text = FormatUtil.FmtResetShort(ad.SResetAt);
-                        }
+                        w.TagP.Text = "5h";
+                        w.TagS.Text = "周";
+                        double? pr = ad.PRemaining;
+                        double? sr = ad.SRemaining;
+                        Color pc = Theme.ColorFor(pr);
+                        Color sc = Theme.ColorFor(sr);
+                        w.BarP.SetValue(pr, pc);
+                        w.BarS.SetValue(sr, sc);
+                        w.ValP.Text = pr.HasValue ? ((int)Math.Round(pr.Value) + "%") : "--";
+                        w.ValP.ForeColor = pc;
+                        w.ValS.Text = sr.HasValue ? ((int)Math.Round(sr.Value) + "%") : "--";
+                        w.ValS.ForeColor = sc;
+                        w.RstP.Text = FormatUtil.FmtResetShort(ad.PResetAt);
+                        w.RstS.Text = FormatUtil.FmtResetShort(ad.SResetAt);
                     }
                     else
                     {
@@ -2128,6 +2125,10 @@ namespace CodexUsageMonitor
                         w.RstP.Text = "";
                         w.RstS.Text = "";
                     }
+                }
+                if (overviewRelayout)
+                {
+                    ReflowOverviewCards();
                 }
                 if (latestTs > 0)
                 {
@@ -2312,6 +2313,151 @@ namespace CodexUsageMonitor
                 _tray.Text = tip;
             }
             catch { }
+        }
+
+        private bool RenderOverviewAgyCard(OverviewWidgets w, AccountInfo a, UsageData ad, string aerr, string akind)
+        {
+            StringBuilder ks = new StringBuilder();
+            if (ad != null && ad.Groups != null && ad.Groups.Count > 0)
+            {
+                ks.Append("OK|");
+                foreach (QuotaGroup g in ad.Groups)
+                {
+                    ks.Append(g.DisplayName).Append("[");
+                    foreach (QuotaBucket b in g.Buckets)
+                        ks.Append(b.ShortLabel).Append(":").Append(b.RemainingPct.HasValue ? ((int)Math.Round(b.RemainingPct.Value)).ToString() : "-").Append(":").Append(FormatUtil.FmtResetShort(b.ResetAt)).Append(";");
+                    ks.Append("]");
+                }
+            }
+            else
+            {
+                ks.Append("ST|").Append(akind ?? "").Append("|").Append(a.AuthBad ? "1" : "0").Append("|").Append(aerr ?? "");
+            }
+            string key = ks.ToString();
+            if (key == w.LastAgyKey) return false;
+            w.LastAgyKey = key;
+
+            int cardW = WindowWidth - 26;
+            int innerW = cardW - 2;
+            Panel host = w.AgyHost;
+            host.SuspendLayout();
+            while (host.Controls.Count > 0)
+                host.Controls[0].Dispose();
+
+            int ry = 2;
+            if (ad != null && ad.Groups != null && ad.Groups.Count > 0)
+            {
+                for (int gi = 0; gi < ad.Groups.Count; gi++)
+                {
+                    QuotaGroup g = ad.Groups[gi];
+                    if (gi > 0)
+                    {
+                        host.Controls.Add(new Panel
+                        {
+                            BackColor = Theme.Border,
+                            Location = UiPoint(8, ry + 1),
+                            Size = UiSize(innerW - 16, 1)
+                        });
+                        ry += 5;
+                    }
+
+                    Label grpLbl = new Label
+                    {
+                        Text = g.DisplayName,
+                        ForeColor = ColorTranslator.FromHtml("#c5b3ff"),
+                        Font = Fonts.Pill,
+                        AutoSize = false,
+                        AutoEllipsis = true,
+                        UseMnemonic = false,
+                        Location = UiPoint(8, ry),
+                        Size = UiSize(innerW - 16, 15)
+                    };
+                    host.Controls.Add(grpLbl);
+                    ry += 16;
+
+                    foreach (QuotaBucket b in g.Buckets)
+                    {
+                        Color c = Theme.ColorFor(b.RemainingPct);
+                        Label tLbl = new Label
+                        {
+                            Text = b.ShortLabel ?? "限额",
+                            ForeColor = Theme.Sub,
+                            Font = Fonts.Pill,
+                            Location = UiPoint(8, ry),
+                            Size = UiSize(30, 16)
+                        };
+                        MiniBarControl bar = new MiniBarControl
+                        {
+                            Location = UiPoint(40, ry + 4),
+                            Size = UiSize(134, 7)
+                        };
+                        bar.SetValue(b.RemainingPct, c);
+                        Label valLbl = new Label
+                        {
+                            Text = b.RemainingPct.HasValue ? ((int)Math.Round(b.RemainingPct.Value) + "%") : "--",
+                            ForeColor = c,
+                            Font = Fonts.Pill,
+                            Location = UiPoint(180, ry),
+                            AutoSize = true
+                        };
+                        Label rstLbl = new Label
+                        {
+                            Text = b.ResetAt.HasValue ? FormatUtil.FmtResetShort(b.ResetAt) : "",
+                            ForeColor = Theme.Muted,
+                            Font = Fonts.Pill,
+                            Location = UiPoint(228, ry),
+                            Size = UiSize(cardW - 238, 16),
+                            TextAlign = ContentAlignment.TopRight
+                        };
+                        host.Controls.Add(tLbl);
+                        host.Controls.Add(bar);
+                        host.Controls.Add(valLbl);
+                        host.Controls.Add(rstLbl);
+                        ry += 19;
+                    }
+                }
+                ry += 3;
+            }
+            else
+            {
+                bool isBad = akind == "auth" || a.AuthBad;
+                bool isOffline = akind == "offline";
+                string st = isBad ? "需重新登录" : (isOffline ? "Antigravity 未运行" : (!string.IsNullOrEmpty(aerr) ? "获取失败" : "加载中…"));
+                host.Controls.Add(new Label
+                {
+                    Text = st,
+                    ForeColor = isBad ? Theme.Red : Theme.Sub,
+                    Font = Fonts.Tiny,
+                    Location = UiPoint(8, 10),
+                    Size = UiSize(innerW - 16, 20)
+                });
+                ry = 36;
+            }
+
+            host.Height = UiPx(ry);
+            int newCardH = 26 + ry + 2;
+            w.Card.Size = UiSize(cardW - 2, newCardH - 2);
+            w.CardWrap.Size = UiSize(cardW, newCardH);
+            Renderer.RoundControl(w.CardWrap, UiPx(9));
+            Renderer.RoundControl(w.Card, UiPx(8));
+            host.ResumeLayout(true);
+            BindInteractions(host);
+            return true;
+        }
+
+        private void ReflowOverviewCards()
+        {
+            int yPx = UiPx(6);
+            int gapPx = UiPx(6);
+            foreach (AccountInfo a in Accounts)
+            {
+                OverviewWidgets w;
+                if (!_overviewCards.TryGetValue(a.Home, out w) || w.CardWrap == null) continue;
+                w.CardWrap.Top = yPx;
+                yPx = w.CardWrap.Bottom + gapPx;
+            }
+            _cardsHost.Height = yPx + UiPx(2);
+            FitHeight();
         }
 
         private AccountInfo PickPlatformAccount(ProviderKind provider, Dictionary<string, FetchResult> snap)
