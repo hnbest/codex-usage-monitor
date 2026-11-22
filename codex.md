@@ -386,3 +386,75 @@
 - 修改文件：本轮追加 codex.md。提交包含 csharp/MainForm.cs、csharp/Renderer.cs、csharp/TaskbarWidgetForm.cs、csharp/app.manifest、csharp/build.ps1、csharp/version.json、codex.md。
 - 实现方法：同步检查远端分支，仅暂存上述文件，沿用仓库忽略规则保留本机 EXE。
 - 验证结果：提交前本地和远端 main 无分歧，Git 差异检查通过。0.0.9 的构建和本机托盘切换验证见上一条记录。
+
+## 2026-11-22 08:15:42
+- 用户需求：检查 AGY 本机额度读取失败，以及添加云端账号后浏览器回调报错。
+- 执行结果：启动本机 Antigravity 后，监控已重新连接并读取真实额度。已修复 C# 云端登录的配置检查和回调错误反馈，生成 0.0.21。当前桌面监控仍运行 0.0.20。
+- 修改原因：本机报错时 Antigravity 客户端和语言服务未运行。云端授权已回调，但 Google 令牌端点因缺少 client_secret 拒绝请求，旧版随后关闭监听，未向浏览器返回错误页。
+- 修改文件：csharp/AntigravityApi.cs、README.md、csharp/version.json、csharp/dist/CodexUsageMonitor-0.0.21.exe、codex.md。
+- 实现方法：发起新授权前检查本机配置中的 Google 桌面应用 OAuth 客户端 ID 和密钥，保留 PKCE，校验回调路径及 state，并在回调成功或失败后返回浏览器结果页。README 补充本机和云端配置步骤。
+- 验证结果：C# 0.0.21 构建通过。使用 .NET Framework 加载新程序实测读取到 3 个额度组和 5 项额度，缺凭据时提前拒绝，模拟无关请求、错误 state 和回调失败响应均符合预期。当前没有已配置的 Google OAuth 凭据，未完成真实云端添加和额度验证。
+
+## 2026-11-22 08:21:56
+- 用户需求：了解 Google 桌面 OAuth 客户端 ID 和密钥是否需要申请，以及如何获取。
+- 执行结果：说明可在 Google Cloud 控制台自行创建桌面应用 OAuth 客户端，并提供测试用户设置和监控配置字段。
+- 修改原因：记录本轮答复，便于后续配置 AGY 云端账号。
+- 修改文件：codex.md。
+- 实现方法：按 Google 官方文档核对 Google Auth Platform 的配置与凭据下载流程，并对照监控源码确认本地字段。
+- 验证结果：已核对官方创建流程和项目字段。本轮未创建凭据或执行真实 AGY 云端授权。
+
+## 2026-11-22 09:33:51
+- 用户需求：在已打开的 Google Cloud 控制台代为申请桌面 OAuth 客户端。
+- 执行结果：在现有 UsageMonitor 项目打开配置向导并填写应用名称，选择外部测试受众。随后在已初始化的 Google Auth Platform 中填好桌面客户端创建表单，等待创建凭据的确认。
+- 修改原因：记录云端配置进度和凭据创建的确认环节。
+- 修改文件：codex.md。
+- 实现方法：通过 Chrome 控制台选定桌面应用类型，客户端名称填写 UsageMonitor Desktop。
+- 验证结果：确认控制台显示 OAuth 项目配置已创建，桌面客户端表单显示预期类型和名称。本轮尚未提交客户端创建。
+
+## 2026-11-22 09:35:16
+- 用户需求：提供已生成的桌面 OAuth 客户端 ID 和密钥，用于配置 AGY 云端账号。
+- 执行结果：已将两项凭据写入本机监控配置，并重启 C# 0.0.21。
+- 修改原因：为 AGY 云端授权提供 Google 桌面应用 OAuth 客户端凭据。
+- 修改文件：%LOCALAPPDATA%\CodexUsageMonitor\config.json、codex.md。
+- 实现方法：读取现有 JSON，仅更新两个 OAuth 字段，原子替换后回读校验。
+- 验证结果：两个字段回读匹配，监控新进程正在运行并写入启动日志。Google 账号授权和云端额度读取仍待完成。
+
+## 2026-11-22 09:38:02
+- 用户需求：根据截图排查 AGY 云端 Google 登录报错 403 access_denied。
+- 执行结果：确认 UsageMonitor 处于测试模式，排查时测试用户为 0。打开添加页面后，已回查目标对象列表，截图中的 Google 账号已在测试用户内。
+- 修改原因：记录 Google 测试模式的访问拦截原因及恢复进度。
+- 修改文件：codex.md。
+- 实现方法：通过 Google Auth Platform 的目标对象页面核对测试状态和用户名单，用户添加后回读。
+- 验证结果：控制台显示 1 个测试用户。检查时本机 AGY 云端账号数为 0，云端额度尚未验证。
+
+## 2026-11-22 09:43:12
+- 用户需求：排查 AGY 云端授权成功并添加账号后仍提示重新登录。
+- 执行结果：修复云端接口 403 被误判为授权失效的问题，构建并切换至 0.0.22。当前 Google Cloud 项目仍无法读取云端额度。
+- 修改原因：同一令牌访问 Google 用户资料返回 200，云端额度接口返回 403 SERVICE_DISABLED。旧版将 403 和 401 都当作授权失效；初始化请求还带了服务器不接受的 WINDOWS 枚举。
+- 修改文件：csharp/AntigravityApi.cs、csharp/MainForm.cs、csharp/version.json、csharp/dist/CodexUsageMonitor-0.0.22.exe、README.md、codex.md。新版轮询更正本机 AGY 账号状态文件 C:\Users\Administrator\AppData\Local\CodexUsageMonitor\agy_accounts\gg0377_gmail.com.json。
+- 实现方法：分别处理 401 和 403，从 Google 错误结构提取原因并显示；移除无效的初始化参数，自动更正已保存账号的误标状态。
+- 验证结果：实测 Google 用户资料 200，额度接口 403 SERVICE_DISABLED，移除参数后初始化接口也返回同一权限错误。控制台对应 API 页面加载失败，未能启用该服务。新版构建与差异检查通过，新进程轮询回写 auth_ok=true 并记录正确错误。
+
+## 2026-11-22 09:44:53
+- 用户需求：根据截图继续排查 AGY 云端额度提示 Cloud Code Private API 未启用（403）。
+- 执行结果：进一步确认当前 Google Cloud 项目和账号无权查询该私有服务，云端额度仍受限。已启动 Antigravity 客户端供本机额度读取。
+- 修改原因：记录本轮对私有服务访问权限的实测结果。
+- 修改文件：codex.md。
+- 实现方法：用同一 Google 授权在同一项目中只读查询两个服务，核对 Google 官方的私有服务启用要求，并用当前监控程序验证本机额度。
+- 验证结果：Service Usage 服务查询返回 200，Cloud Code Private API 服务查询返回 403 PERMISSION_DENIED。本机实测取得 3 个额度组、5 项额度。未更改云端项目或源码。
+
+## 2026-11-22 09:47:22
+- 用户需求：确认关闭 Antigravity 桌面软件后，能否利用本机缓存的 token 或 auth 读取 AGY 额度。
+- 执行结果：当前本机模式依赖运行中的语言服务。本机令牌可用于身份验证，实时数据仍需额度服务接受请求；自建 OAuth 项目此前实测被额度接口拒绝。官方 CLI 提供另一个无需桌面界面的交互查询入口。
+- 修改原因：记录本机发现、登录凭证、离线额度快照与 CLI 查询之间的区别。
+- 修改文件：codex.md。
+- 实现方法：检查现有 C# 读取路径、常规缓存目录文件名和官方 CLI 文档，验证本机 agy 版本及非交互命令。
+- 验证结果：本机 CLI 1.4.12，agy models 成功列出模型，输出未提供额度。官方 /usage 可交互刷新额度，本轮未实测其界面或验证可供监控自动采集的非交互额度输出。常规缓存目录未发现单独命名的额度文件。
+
+## 2026-11-22 09:53:18
+- 用户需求：AGY 桌面客户端关闭或尚未登录时，显示上次额度快照。
+- 执行结果：Windows C# 0.0.23 已构建并运行。AGY 本机模式成功采集后保存额度快照，离线时展示最后一次采集的额度和时间。
+- 修改原因：本机语言服务离线或未登录时无法查询实时额度，需要保留最后一次可用数据。
+- 修改文件：.gitignore、csharp/AntigravityApi.cs、csharp/Models.cs、csharp/MainForm.cs、csharp/TaskbarWidgetForm.cs、csharp/version.json、csharp/dist/CodexUsageMonitor-0.0.23.exe、codex.md。实际轮询生成本机 %LOCALAPPDATA%\CodexUsageMonitor\agy_local_quota.json。
+- 实现方法：原子保存可用的本机额度分组、套餐及采集时间。离线轮询加载历史文件，在详情、总览和任务栏标记快照，不触发低额通知。
+- 验证结果：C# 构建通过。真实轮询保存 3 个组、5 项额度，独立进程回读额度、时间及中文标签通过；缺失及损坏快照测试通过。未退出运行中的 Antigravity 进行桌面状态切换实测。

@@ -208,7 +208,7 @@ namespace CodexUsageMonitor
     {
         public UsageData Data;
         public string Error;
-        public string ErrorKind; // null | "auth" | "net" | "offline"
+        public string ErrorKind; // null | "auth" | "net" | "offline" | "permission" | "snapshot"
     }
 
     public class AuthException : Exception
@@ -291,11 +291,16 @@ namespace CodexUsageMonitor
 
         public static Dictionary<string, object> ReadDict(string path)
         {
+            return ReadObject<Dictionary<string, object>>(path);
+        }
+
+        public static T ReadObject<T>(string path) where T : class
+        {
             try
             {
                 if (!File.Exists(path)) return null;
                 string txt = File.ReadAllText(path, Encoding.UTF8);
-                return NewSer().Deserialize<Dictionary<string, object>>(txt);
+                return NewSer().Deserialize<T>(txt);
             }
             catch
             {
@@ -429,6 +434,11 @@ namespace CodexUsageMonitor
         public static DateTime FromUnixLocal(double epoch)
         {
             return UnixEpoch.AddSeconds(epoch).ToLocalTime();
+        }
+
+        public static string FmtQuotaSnapshot(double capturedAt)
+        {
+            return "额度快照 · " + FromUnixLocal(capturedAt).ToString("MM-dd HH:mm");
         }
 
         public static string FmtDuration(double? sec)

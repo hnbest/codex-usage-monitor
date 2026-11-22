@@ -70,6 +70,12 @@ Windows 系统托盘 + 置顶透明浮动卡片工具，实时监控 OpenAI Code
 2. **同时观察多账号**：点击主窗口右上角 `总览` 按钮（或右键/托盘菜单），即可同屏查看所有账号的 5 小时 / 每周余量进度条；点击任意账号昵称可切回双环详情。
 3. **一键切换 CLI 账号**：在总览卡片、设置面板或右键菜单点击 `切为CLI`，即可无损热切换当前 Codex CLI 登录账号。**切号时请勿执行 `codex logout`**，否则 OpenAI 会主动吊销原账号会话。
 
+## Antigravity（Windows C# 版）
+
+- 本机额度由正在运行的 Antigravity 客户端提供。登录并保持客户端运行，监控会在下一次轮询时自动读取，也可以点击底栏的刷新频率立即刷新。
+- 添加 AGY 云端账号前，在退出监控后编辑 `%LOCALAPPDATA%\CodexUsageMonitor\config.json`，填入同一个 Google **桌面应用** OAuth 客户端的 `agy_oauth_client_id` 和 `agy_oauth_client_secret`。重新打开监控，在设置中点击「添加 AGY 云端账号」，并完成 Google 授权。该客户端和账号还需要具备 AGY 云端额度接口所需的权限。
+- 如果添加成功后提示「Google Cloud 项目未启用 Cloud Code Private API（403）」，Google 已接受账号授权，云端额度接口仍要求该项目能够启用并调用 `cloudcode-pa.googleapis.com`。本机额度可继续通过 Antigravity 客户端读取。
+
 ## 配置文件说明
 
 程序首次运行会在同目录生成 `config.json`（已列入 `.gitignore`）：

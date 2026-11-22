@@ -1564,6 +1564,7 @@ namespace CodexUsageMonitor
                 string tagTxt;
                 Color tagFg;
                 if (acct.AuthBad) { tagTxt = "需重新登录"; tagFg = Theme.Red; }
+                else if (fr != null && fr.ErrorKind == "permission") { tagTxt = "云端权限受限"; tagFg = Theme.Red; }
                 else if (fr != null && fr.ErrorKind == "offline") { tagTxt = "未运行"; tagFg = Theme.Muted; }
                 else if (fr != null && fr.Data != null)
                 {
@@ -2224,7 +2225,12 @@ namespace CodexUsageMonitor
                 if (d != null)
                 {
                     string stamp = FormatUtil.FromUnixLocal(d.Ts).ToString("HH:mm:ss");
-                    if (!string.IsNullOrEmpty(err))
+                    if (errKind == "snapshot")
+                    {
+                        _lblFoot.Text = FormatUtil.FmtQuotaSnapshot(d.Ts);
+                        _lblFoot.ForeColor = Theme.Yellow;
+                    }
+                    else if (!string.IsNullOrEmpty(err))
                     {
                         _lblFoot.Text = "⚠ 刷新失败 · 上次 " + stamp;
                         _lblFoot.ForeColor = Theme.Yellow;
@@ -2321,6 +2327,7 @@ namespace CodexUsageMonitor
             if (ad != null && ad.Groups != null && ad.Groups.Count > 0)
             {
                 ks.Append("OK|");
+                if (akind == "snapshot") ks.Append("snapshot|").Append(ad.Ts).Append("|");
                 foreach (QuotaGroup g in ad.Groups)
                 {
                     ks.Append(g.DisplayName).Append("[");
@@ -2347,6 +2354,18 @@ namespace CodexUsageMonitor
             int ry = 2;
             if (ad != null && ad.Groups != null && ad.Groups.Count > 0)
             {
+                if (akind == "snapshot")
+                {
+                    host.Controls.Add(new Label
+                    {
+                        Text = FormatUtil.FmtQuotaSnapshot(ad.Ts),
+                        ForeColor = Theme.Yellow,
+                        Font = Fonts.Pill,
+                        Location = UiPoint(8, ry),
+                        Size = UiSize(innerW - 16, 16)
+                    });
+                    ry += 18;
+                }
                 for (int gi = 0; gi < ad.Groups.Count; gi++)
                 {
                     QuotaGroup g = ad.Groups[gi];
@@ -2505,7 +2524,9 @@ namespace CodexUsageMonitor
             }
             if (_lblAgySource != null && ViewAccount != null)
             {
-                _lblAgySource.Text = ViewAccount.IsAgyLocal ? "● 本机自动读取" : "☁ 云端 Google 账号";
+                _lblAgySource.Text = ViewAccount.IsAgyLocal
+                    ? (errKind == "snapshot" ? "● 本机额度快照" : "● 本机自动读取")
+                    : "☁ 云端 Google 账号";
             }
 
             string newKey = keySb.ToString();
@@ -2612,7 +2633,7 @@ namespace CodexUsageMonitor
                 string msg = isBad
                     ? "Google 授权已失效\r\n点击底栏重新登录"
                     : (isOffline
-                        ? "未检测到运行中的 Antigravity\r\n打开客户端后将自动读取，或添加云端账号"
+                        ? (err ?? "未检测到运行中的 Antigravity") + "\r\n打开并登录后将自动读取"
                         : (!string.IsNullOrEmpty(err) ? err : "正在获取 Antigravity 额度…"));
                 Label ph = new Label
                 {
@@ -2662,6 +2683,7 @@ namespace CodexUsageMonitor
                             sb.AppendFormat("[AGY]{0}: 剩{1}%",
                                 nm,
                                 ad.MinRemaining.HasValue ? ((int)Math.Round(ad.MinRemaining.Value)).ToString() : "-");
+                            if (afr.ErrorKind == "snapshot") sb.Append(" (快照)");
                         }
                         else
                         {
@@ -2864,9 +2886,20 @@ namespace CodexUsageMonitor
                     }
                     catch (OfflineException ex)
                     {
-                        res.Data = null;
+                        if (acct.IsAgyLocal) res.Data = AntigravityApi.ReadLocalQuotaSnapshot();
                         res.Error = ex.Message;
-                        res.ErrorKind = "offline";
+                        res.ErrorKind = res.Data != null ? "snapshot" : "offline";
+                    }
+                    catch (AgyCloudPermissionException ex)
+                    {
+                        res.Error = ex.Message;
+                        res.ErrorKind = "permission";
+                        if (acct.AuthBad)
+                        {
+                            AntigravityApi.MarkAuthState(acct.Home, true);
+                            needRerender = true;
+                        }
+                        Logger.Log("AGY 云端额度: " + ex.Message);
                     }
                     catch (AuthException ex)
                     {

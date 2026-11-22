@@ -286,6 +286,7 @@ namespace CodexUsageMonitor
                 if (_agyData != null)
                 {
                     sb.AppendFormat("[AGY] {0} ({1})", _agyName, (_agyData.Plan ?? "AGY").ToUpperInvariant());
+                    if (_agyErrKind == "snapshot") sb.Append("\n").Append(FormatUtil.FmtQuotaSnapshot(_agyData.Ts));
                     if (_agyData.Groups != null && _agyData.Groups.Count > 0)
                     {
                         foreach (QuotaGroup g in _agyData.Groups)
@@ -327,6 +328,7 @@ namespace CodexUsageMonitor
                 {
                     System.Text.StringBuilder sb = new System.Text.StringBuilder();
                     sb.AppendFormat("[AGY] {0} [{1}]", _acctName, (_data.Plan ?? "AGY").ToUpperInvariant());
+                    if (_errKind == "snapshot") sb.Append("\n").Append(FormatUtil.FmtQuotaSnapshot(_data.Ts));
                     if (_data.Buckets != null)
                     {
                         foreach (QuotaBucket b in _data.Buckets)
@@ -747,7 +749,8 @@ namespace CodexUsageMonitor
                 double? agyPct = PickAgyWindowPct(_agyData, _showWeekly);
                 string agyFallback = _agyErrKind == "offline" ? "离线" : (_agyErrKind == "auth" ? "重登" : "--");
                 Color agyFbColor = _agyErrKind == "auth" ? Theme.Red : Theme.Sub;
-                DrawRow(g, "A·" + winTag, agyPct, rowH, size.Height - rowH - 2, size.Width, agyFallback, agyFbColor);
+                string agyLabel = _agyErrKind == "snapshot" ? "快照" : "A·" + winTag;
+                DrawRow(g, agyLabel, agyPct, rowH, size.Height - rowH - 2, size.Width, agyFallback, agyFbColor);
             }
             else if (_data != null)
             {
@@ -755,7 +758,8 @@ namespace CodexUsageMonitor
                 if (_data.Provider == ProviderKind.Antigravity && _data.Groups != null && _data.Groups.Count > 0)
                 {
                     QuotaGroup g1 = _data.Groups[0];
-                    DrawRow(g, g1.ShortName ?? "Gem", g1.MinRemaining, 2, rowH - 2, size.Width, "--", Theme.Sub);
+                    string agyLabel = _errKind == "snapshot" ? "快照" : (g1.ShortName ?? "Gem");
+                    DrawRow(g, agyLabel, g1.MinRemaining, 2, rowH - 2, size.Width, "--", Theme.Sub);
                     if (_data.Groups.Count >= 2)
                     {
                         QuotaGroup g2 = _data.Groups[1];

@@ -5,6 +5,7 @@ __pycache__/
 
 # 运行时配置与日志
 config.json
+agy_local_quota.json
 *.log
 *.log.*
 debug.on

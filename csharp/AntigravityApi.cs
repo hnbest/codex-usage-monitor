@@ -19,6 +19,11 @@ namespace CodexUsageMonitor
         public OfflineException(string msg) : base(msg) { }
     }
 
+    public class AgyCloudPermissionException : Exception
+    {
+        public AgyCloudPermissionException(string message) : base(message) { }
+    }
+
     public static class AntigravityApi
     {
         public const string LocalUid = "agy:local";
@@ -46,6 +51,7 @@ namespace CodexUsageMonitor
 
         private static readonly object OAuthLock = new object();
         private static HttpListener _activeListener;
+        private const string OAuthCallbackPath = "/oauth-callback";
 
         // ---------------- Win32 TCP 端口枚举 (按 PID 查本地监听端口，支持 IPv4/IPv6，无子进程) ----------------
         private const int AF_INET = 2;
@@ -265,8 +271,53 @@ namespace CodexUsageMonitor
         {
             if (acct == null) throw new Exception("无效账号");
             if (acct.IsAgyLocal || acct.Home == LocalHome)
-                return FetchLocalUsage();
+            {
+                UsageData data = FetchLocalUsage();
+                if (!data.MinRemaining.HasValue)
+                    throw new OfflineException("未读取到 Antigravity 额度（请确认已登录）");
+                SaveLocalQuotaSnapshot(data);
+                return data;
+            }
             return FetchCloudUsage(acct.Home, cfg);
+        }
+
+        private sealed class LocalQuotaSnapshot
+        {
+            public double CapturedAt;
+            public string Plan;
+            public List<QuotaGroup> Groups;
+        }
+
+        private static string LocalQuotaSnapshotPath
+        {
+            get { return Path.Combine(AppPaths.DataDir, "agy_local_quota.json"); }
+        }
+
+        private static void SaveLocalQuotaSnapshot(UsageData data)
+        {
+            try
+            {
+                JsonUtil.WriteAtomic(LocalQuotaSnapshotPath, new LocalQuotaSnapshot
+                {
+                    CapturedAt = data.Ts,
+                    Plan = data.Plan,
+                    Groups = data.Groups
+                });
+            }
+            catch (IOException ex) { Logger.Log("AGY 额度快照保存失败: " + ex.Message); }
+            catch (UnauthorizedAccessException ex) { Logger.Log("AGY 额度快照保存失败: " + ex.Message); }
+        }
+
+        public static UsageData ReadLocalQuotaSnapshot()
+        {
+            LocalQuotaSnapshot snapshot = JsonUtil.ReadObject<LocalQuotaSnapshot>(LocalQuotaSnapshotPath);
+            if (snapshot == null || !(snapshot.CapturedAt > 0 && snapshot.CapturedAt <= FormatUtil.NowUnix() + 86400)
+                || snapshot.Groups == null || snapshot.Groups.Exists(g => g == null || g.Buckets == null || g.Buckets.Exists(b => b == null)))
+                return null;
+
+            UsageData data = BuildUsageFromGroups(LocalHome, "", snapshot.Plan, "本机快照", snapshot.Groups);
+            data.Ts = snapshot.CapturedAt;
+            return data.MinRemaining.HasValue ? data : null;
         }
 
         // ---------------- 通道 1: 本机 Antigravity 自动发现 ----------------
@@ -698,45 +749,49 @@ namespace CodexUsageMonitor
 
         public static bool StartCloudOAuthLogin(AppConfig cfg, Action<bool, string> onDone, out string immediateMsg)
         {
-            immediateMsg = "";
-            string clientId = GetClientId(cfg);
+            string clientId = cfg == null ? "" : (cfg.agy_oauth_client_id ?? "").Trim();
             string clientSecret = GetClientSecret(cfg);
-
-            HttpListener listener = null;
-            int port = 0;
-            for (int p = 51121; p <= 51135; p++)
+            if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
             {
-                HttpListener test = new HttpListener();
-                try
-                {
-                    test.Prefixes.Add(string.Format("http://127.0.0.1:{0}/oauth-callback/", p));
-                    test.Prefixes.Add(string.Format("http://localhost:{0}/oauth-callback/", p));
-                    test.Start();
-                    listener = test;
-                    port = p;
-                    break;
-                }
-                catch
-                {
-                    try { test.Close(); } catch { }
-                }
-            }
-            if (listener == null)
-            {
-                immediateMsg = "无法启动本地 OAuth 回调端口 (51121~51135 被占用)";
+                immediateMsg = "请先配置 Google 桌面 OAuth 客户端 ID 和密钥";
                 return false;
             }
 
+            HttpListener listener = null;
+            int port = 0;
             lock (OAuthLock)
             {
                 if (_activeListener != null)
                 {
-                    try { _activeListener.Stop(); _activeListener.Close(); } catch { }
+                    immediateMsg = "Google 授权正在进行，请返回浏览器";
+                    return false;
+                }
+                for (int p = 51121; p <= 51135; p++)
+                {
+                    HttpListener test = new HttpListener();
+                    try
+                    {
+                        test.Prefixes.Add(string.Format("http://localhost:{0}/", p));
+                        test.Start();
+                        listener = test;
+                        port = p;
+                        break;
+                    }
+                    catch (HttpListenerException ex)
+                    {
+                        test.Close();
+                        Logger.Log("Google OAuth 回调监听失败: " + ex.ErrorCode);
+                    }
+                }
+                if (listener == null)
+                {
+                    immediateMsg = "无法启动 Google 授权回调，请查看监控日志";
+                    return false;
                 }
                 _activeListener = listener;
             }
 
-            string redirectUri = string.Format("http://localhost:{0}/oauth-callback", port);
+            string redirectUri = string.Format("http://localhost:{0}{1}", port, OAuthCallbackPath);
             string state = RandomBase64Url(16);
             string verifier = RandomBase64Url(32);
             string challenge = Sha256Base64Url(verifier);
@@ -758,30 +813,30 @@ namespace CodexUsageMonitor
             }
             catch (Exception ex)
             {
-                try { listener.Stop(); listener.Close(); } catch { }
+                CloseOAuthListener(listener);
                 immediateMsg = "打开浏览器失败: " + ex.Message;
                 return false;
             }
 
             Thread t = new Thread((ThreadStart)delegate
             {
+                HttpListenerContext ctx = null;
                 try
                 {
-                    IAsyncResult ar = listener.BeginGetContext(null, null);
-                    if (!ar.AsyncWaitHandle.WaitOne(TimeSpan.FromMinutes(5)))
+                    ctx = WaitForOAuthCallback(listener, state, TimeSpan.FromMinutes(5));
+                    if (ctx == null)
                     {
                         if (onDone != null) onDone(false, "Google 登录超时，请重试");
                         return;
                     }
-                    HttpListenerContext ctx = listener.EndGetContext(ar);
                     string code = ctx.Request.QueryString["code"];
-                    string retState = ctx.Request.QueryString["state"];
                     string err = ctx.Request.QueryString["error"];
 
-                    if (!string.IsNullOrEmpty(err) || string.IsNullOrEmpty(code) || retState != state)
+                    if (!string.IsNullOrEmpty(err) || string.IsNullOrEmpty(code))
                     {
-                        WriteHtmlResponse(ctx.Response, false, "授权未完成或已取消：" + (err ?? "无效回调"));
-                        if (onDone != null) onDone(false, "Google 授权未完成: " + (err ?? "已取消"));
+                        string message = err == "access_denied" ? "Google 授权已取消" : "Google 授权未完成，请重新发起授权";
+                        WriteHtmlResponse(ctx.Response, false, message);
+                        if (onDone != null) onDone(false, message);
                         return;
                     }
 
@@ -819,12 +874,15 @@ namespace CodexUsageMonitor
                 }
                 catch (Exception ex)
                 {
-                    Logger.Log("Antigravity OAuth 异常: " + ex.Message);
-                    if (onDone != null) onDone(false, "Google 登录失败: " + ex.Message);
+                    AuthException authError = ex as AuthException;
+                    string message = authError != null ? authError.Message : "Google 登录失败，请查看监控日志";
+                    Logger.Log("Antigravity OAuth 异常: " + (authError != null ? authError.Message : ex.GetType().Name));
+                    if (ctx != null) WriteHtmlResponse(ctx.Response, false, message);
+                    if (onDone != null) onDone(false, message);
                 }
                 finally
                 {
-                    try { listener.Stop(); listener.Close(); } catch { }
+                    CloseOAuthListener(listener);
                 }
             });
             t.IsBackground = true;
@@ -832,6 +890,37 @@ namespace CodexUsageMonitor
 
             immediateMsg = "已打开浏览器进行 Google 授权，完成后自动加入";
             return true;
+        }
+
+        private static HttpListenerContext WaitForOAuthCallback(HttpListener listener, string state, TimeSpan timeout)
+        {
+            Stopwatch timer = Stopwatch.StartNew();
+            for (TimeSpan remaining = timeout; remaining > TimeSpan.Zero; remaining = timeout - timer.Elapsed)
+            {
+                IAsyncResult pending = listener.BeginGetContext(null, null);
+                if (!pending.AsyncWaitHandle.WaitOne(remaining)) return null;
+                HttpListenerContext ctx = listener.EndGetContext(pending);
+                if (ctx.Request.HttpMethod == "GET" && ctx.Request.Url.AbsolutePath == OAuthCallbackPath)
+                {
+                    if (ctx.Request.QueryString["state"] == state) return ctx;
+                    WriteHtmlResponse(ctx.Response, false, "此授权链接已失效，请返回监控窗口重新发起授权。");
+                }
+                else
+                {
+                    ctx.Response.StatusCode = 404;
+                    ctx.Response.Close();
+                }
+            }
+            return null;
+        }
+
+        private static void CloseOAuthListener(HttpListener listener)
+        {
+            lock (OAuthLock)
+            {
+                try { listener.Close(); } catch { }
+                if (_activeListener == listener) _activeListener = null;
+            }
         }
 
         private static void WriteHtmlResponse(HttpListenerResponse resp, bool ok, string message)
@@ -846,7 +935,9 @@ namespace CodexUsageMonitor
                     + "h2{color:" + color + ";margin:0 0 12px;}p{color:#b0b3be;font-size:14px;line-height:1.6;margin:0;}</style></head>"
                     + "<body><div class='card'><h2>" + title + "</h2><p>" + WebUtility.HtmlEncode(message) + "</p></div></body></html>";
                 byte[] buf = Encoding.UTF8.GetBytes(html);
-                resp.StatusCode = 200;
+                resp.StatusCode = ok ? 200 : 400;
+                resp.Headers["Cache-Control"] = "no-store";
+                resp.Headers["Referrer-Policy"] = "no-referrer";
                 resp.ContentType = "text/html; charset=utf-8";
                 resp.ContentLength64 = buf.Length;
                 resp.OutputStream.Write(buf, 0, buf.Length);
@@ -869,25 +960,38 @@ namespace CodexUsageMonitor
             req.Timeout = 15000;
             req.ContentType = "application/x-www-form-urlencoded";
             req.ContentLength = data.Length;
-            using (Stream st = req.GetRequestStream())
-                st.Write(data, 0, data.Length);
             try
             {
+                using (Stream st = req.GetRequestStream())
+                    st.Write(data, 0, data.Length);
                 using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
                 using (StreamReader sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
                     return JsonUtil.ParseDict(sr.ReadToEnd()) ?? new Dictionary<string, object>();
             }
             catch (WebException wex)
             {
-                string errBody = "";
-                try
+                HttpWebResponse response = wex.Response as HttpWebResponse;
+                if (response == null) throw;
+                using (response)
                 {
-                    if (wex.Response != null)
-                        using (StreamReader sr = new StreamReader(wex.Response.GetResponseStream(), Encoding.UTF8))
-                            errBody = sr.ReadToEnd();
+                    Dictionary<string, object> error;
+                    using (StreamReader sr = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                        error = JsonUtil.ParseDict(sr.ReadToEnd());
+                    switch (JsonUtil.GetStr(error, "error"))
+                    {
+                        case "invalid_client":
+                        case "unauthorized_client":
+                            throw new AuthException("Google 拒绝了 OAuth 客户端，请核对客户端 ID 和密钥");
+                        case "invalid_grant":
+                            throw new AuthException("Google 授权已失效，请重新登录");
+                        case "invalid_request":
+                            if (JsonUtil.GetStr(error, "error_description") == "client_secret is missing.")
+                                throw new AuthException("Google 登录缺少 OAuth 客户端密钥");
+                            break;
+                    }
+                    Logger.Log("Google 令牌请求失败（HTTP " + (int)response.StatusCode + "）");
+                    throw;
                 }
-                catch { }
-                throw new Exception(string.IsNullOrEmpty(errBody) ? wex.Message : errBody);
             }
         }
 
@@ -951,8 +1055,13 @@ namespace CodexUsageMonitor
                 catch (WebException wex)
                 {
                     HttpWebResponse hr = wex.Response as HttpWebResponse;
-                    if (hr != null && ((int)hr.StatusCode == 401 || (int)hr.StatusCode == 403))
-                        throw new AuthException("Google 授权已失效或无权限 (" + (int)hr.StatusCode + ")");
+                    using (hr)
+                    {
+                        if (hr != null && hr.StatusCode == HttpStatusCode.Unauthorized)
+                            throw new AuthException("Google 授权已失效，请重新登录");
+                        if (hr != null && hr.StatusCode == HttpStatusCode.Forbidden)
+                            throw new AgyCloudPermissionException(GetCloudPermissionMessage(hr));
+                    }
                     lastEx = wex;
                 }
                 catch (Exception ex)
@@ -963,11 +1072,37 @@ namespace CodexUsageMonitor
             throw lastEx ?? new Exception("请求 Google Cloud Code API 失败");
         }
 
+        private static string GetCloudPermissionMessage(HttpWebResponse response)
+        {
+            try
+            {
+                using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                {
+                    Dictionary<string, object> error = JsonUtil.GetDict(JsonUtil.ParseDict(reader.ReadToEnd()), "error");
+                    List<object> details = JsonUtil.GetList(error, "details");
+                    if (details != null)
+                    {
+                        foreach (object detail in details)
+                        {
+                            string reason = JsonUtil.GetStr(detail as Dictionary<string, object>, "reason");
+                            if (reason == "SERVICE_DISABLED")
+                                return "Google Cloud 项目未启用 Cloud Code Private API（403）";
+                            if (reason == "ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+                                return "Google 授权范围不足，无法读取云端额度（403）";
+                        }
+                    }
+                }
+            }
+            catch (IOException) { }
+            catch (WebException) { }
+            return "Google 拒绝访问 AGY 云端额度接口（403）";
+        }
+
         private static void LoadCodeAssistInfo(string accessToken, out string projectId, out string plan)
         {
             projectId = "";
             plan = "AGY";
-            string body = "{\"metadata\":{\"ideType\":\"IDE_UNSPECIFIED\",\"platform\":\"WINDOWS\",\"pluginType\":\"GEMINI\"}}";
+            string body = "{\"metadata\":{\"ideType\":\"IDE_UNSPECIFIED\",\"pluginType\":\"GEMINI\"}}";
             Dictionary<string, object> r = PostCloudCode("/v1internal:loadCodeAssist", accessToken, body);
             if (r == null) return;
             projectId = JsonUtil.GetStr(r, "cloudaicompanionProject") ?? "";
@@ -1063,6 +1198,7 @@ namespace CodexUsageMonitor
                     JsonUtil.WriteAtomic(filePath, acct);
                 }
                 catch (AuthException) { throw; }
+                catch (AgyCloudPermissionException) { throw; }
                 catch { }
             }
 
@@ -1079,6 +1215,7 @@ namespace CodexUsageMonitor
                     return BuildUsageFromGroups(filePath, name, plan, "云端", groups);
             }
             catch (AuthException) { throw; }
+            catch (AgyCloudPermissionException) { throw; }
             catch { }
 
             Dictionary<string, object> r = PostCloudCode("/v1internal:fetchAvailableModels", accessToken, body);
