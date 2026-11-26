@@ -150,6 +150,9 @@ namespace CodexUsageMonitor
         private const int TTM_UPDATETIPTEXTW = 0x0439;
         private const int TTM_SETMAXTIPWIDTH = 0x0418;
 
+        private static float Dpi { get { return NativeWin.DpiScale; } }
+        private static int DpiPx(int value) { return NativeWin.ScaleDpi(value); }
+
         private readonly MainForm _owner;
         private readonly System.Windows.Forms.Timer _keepTimer;
         private readonly System.Windows.Forms.Timer _cycleTimer;
@@ -200,7 +203,7 @@ namespace CodexUsageMonitor
             Visible = false;
             TabStop = false;
             SetStyle(ControlStyles.Selectable, false);
-            Size = new Size(WidgetWidth, 38);
+            Size = new Size(DpiPx(WidgetWidth), DpiPx(38));
             Cursor = Cursors.Hand;
 
             MouseEnter += delegate { _hover = true; _widgetNeedsPaint = true; };
@@ -375,7 +378,7 @@ namespace CodexUsageMonitor
                     Style = unchecked((int)0x80000003), // WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX
                     ExStyle = 0x00000008 // WS_EX_TOPMOST
                 });
-                SendMessage(_tip.Handle, TTM_SETMAXTIPWIDTH, IntPtr.Zero, new IntPtr(560));
+                SendMessage(_tip.Handle, TTM_SETMAXTIPWIDTH, IntPtr.Zero, new IntPtr(DpiPx(560)));
                 SetToolTipText(TTM_ADDTOOLW);
             }
             catch (Win32Exception) { }
@@ -510,21 +513,23 @@ namespace CodexUsageMonitor
 
         private static Rectangle FindFreeSlot(Rectangle bar, int trayLeft, List<Rectangle> occupied)
         {
-            int height = Math.Min(38, Math.Max(28, bar.Height - 8));
+            int widgetWidth = DpiPx(WidgetWidth);
+            int pad = DpiPx(PaddingBetweenItems);
+            int height = Math.Min(DpiPx(38), Math.Max(DpiPx(28), bar.Height - DpiPx(8)));
             int top = bar.Top + (bar.Height - height) / 2;
-            int right = trayLeft - PaddingBetweenItems;
+            int right = trayLeft - pad;
             // 从通知区往左找最近的可用空位，逐个避开已有控件。
             occupied.Sort((a, b) => b.Right.CompareTo(a.Right));
             foreach (Rectangle item in occupied)
             {
-                if (item.Left < right + PaddingBetweenItems &&
-                    item.Right > right - WidgetWidth - PaddingBetweenItems)
-                    right = item.Left - PaddingBetweenItems;
+                if (item.Left < right + pad &&
+                    item.Right > right - widgetWidth - pad)
+                    right = item.Left - pad;
             }
-            if (right - WidgetWidth < bar.Left + PaddingBetweenItems)
+            if (right - widgetWidth < bar.Left + pad)
                 return Rectangle.Empty;
 
-            return new Rectangle(right - WidgetWidth, top, WidgetWidth, height);
+            return new Rectangle(right - widgetWidth, top, widgetWidth, height);
         }
 
 
@@ -727,14 +732,16 @@ namespace CodexUsageMonitor
             Rectangle client = new Rectangle(Point.Empty, size);
             Color bg = _hover ? ColorTranslator.FromHtml("#262934") : ColorTranslator.FromHtml("#1c1e26");
             Color bd = _hover ? Theme.Accent : ColorTranslator.FromHtml("#333746");
-            using (GraphicsPath frame = Renderer.RoundedRect(new RectangleF(0.5f, 0.5f, size.Width - 1, size.Height - 1), 6))
+            float penW = Math.Max(1f, Dpi * 0.6f);
+            using (GraphicsPath frame = Renderer.RoundedRect(new RectangleF(penW * 0.5f, penW * 0.5f, size.Width - penW, size.Height - penW), 6f * Dpi))
             using (SolidBrush br = new SolidBrush(bg))
-            using (Pen p = new Pen(bd, 1f))
+            using (Pen p = new Pen(bd, penW))
             {
                 g.FillPath(br, frame);
                 g.DrawPath(p, frame);
             }
 
+            int rowPad = DpiPx(2);
             if (_mode == TaskbarDisplayMode.Dual && _agyName != null)
             {
                 int rowH = size.Height / 2;
@@ -744,13 +751,13 @@ namespace CodexUsageMonitor
                     : null;
                 string cdxFallback = _cdxName == null ? "未登" : (_cdxErrKind == "auth" ? "重登" : "--");
                 Color cdxFbColor = _cdxErrKind == "auth" ? Theme.Red : Theme.Sub;
-                DrawRow(g, "C·" + winTag, cdxPct, 2, rowH - 2, size.Width, cdxFallback, cdxFbColor);
+                DrawRow(g, "C·" + winTag, cdxPct, rowPad, rowH - rowPad, size.Width, cdxFallback, cdxFbColor);
 
                 double? agyPct = PickAgyWindowPct(_agyData, _showWeekly);
                 string agyFallback = _agyErrKind == "offline" ? "离线" : (_agyErrKind == "auth" ? "重登" : "--");
                 Color agyFbColor = _agyErrKind == "auth" ? Theme.Red : Theme.Sub;
                 string agyLabel = _agyErrKind == "snapshot" ? "快照" : "A·" + winTag;
-                DrawRow(g, agyLabel, agyPct, rowH, size.Height - rowH - 2, size.Width, agyFallback, agyFbColor);
+                DrawRow(g, agyLabel, agyPct, rowH, size.Height - rowH - rowPad, size.Width, agyFallback, agyFbColor);
             }
             else if (_data != null)
             {
@@ -759,21 +766,21 @@ namespace CodexUsageMonitor
                 {
                     QuotaGroup g1 = _data.Groups[0];
                     string agyLabel = _errKind == "snapshot" ? "快照" : (g1.ShortName ?? "Gem");
-                    DrawRow(g, agyLabel, g1.MinRemaining, 2, rowH - 2, size.Width, "--", Theme.Sub);
+                    DrawRow(g, agyLabel, g1.MinRemaining, rowPad, rowH - rowPad, size.Width, "--", Theme.Sub);
                     if (_data.Groups.Count >= 2)
                     {
                         QuotaGroup g2 = _data.Groups[1];
-                        DrawRow(g, g2.ShortName ?? "Cld", g2.MinRemaining, rowH, size.Height - rowH - 2, size.Width, "--", Theme.Sub);
+                        DrawRow(g, g2.ShortName ?? "Cld", g2.MinRemaining, rowH, size.Height - rowH - rowPad, size.Width, "--", Theme.Sub);
                     }
                     else
                     {
-                        DrawRow(g, "AGY", g1.MinRemaining, rowH, size.Height - rowH - 2, size.Width, "--", Theme.Sub);
+                        DrawRow(g, "AGY", g1.MinRemaining, rowH, size.Height - rowH - rowPad, size.Width, "--", Theme.Sub);
                     }
                 }
                 else
                 {
-                    DrawRow(g, "5h", _data.PRemaining, 2, rowH - 2, size.Width, "--", Theme.Sub);
-                    DrawRow(g, "周", _data.SRemaining, rowH, size.Height - rowH - 2, size.Width, "--", Theme.Sub);
+                    DrawRow(g, "5h", _data.PRemaining, rowPad, rowH - rowPad, size.Width, "--", Theme.Sub);
+                    DrawRow(g, "周", _data.SRemaining, rowH, size.Height - rowH - rowPad, size.Width, "--", Theme.Sub);
                 }
             }
             else if (_errKind == "auth")
@@ -798,19 +805,21 @@ namespace CodexUsageMonitor
 
         private void DrawRow(Graphics g, string label, double? pct, int y, int h, int width, string fallbackText, Color fallbackColor)
         {
+            float s = Dpi;
             Color c = pct.HasValue ? Theme.ColorFor(pct) : fallbackColor;
             using (SolidBrush subBr = new SolidBrush(Theme.Sub))
             using (StringFormat sfLeft = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
             {
-                g.DrawString(label, _fLbl, subBr, new RectangleF(6, y, 42, h), sfLeft);
+                g.DrawString(label, _fLbl, subBr, new RectangleF(6f * s, y, 42f * s, h), sfLeft);
             }
 
             // 迷你进度条
-            float barX = 48f;
-            float barW = 48f;
-            float barH = 5f;
+            float barX = 48f * s;
+            float barW = 48f * s;
+            float barH = 5f * s;
+            float barR = barH / 2f;
             float barY = y + (h - barH) / 2f;
-            using (GraphicsPath tr = Renderer.RoundedRect(new RectangleF(barX, barY, barW, barH), 2.5f))
+            using (GraphicsPath tr = Renderer.RoundedRect(new RectangleF(barX, barY, barW, barH), barR))
             using (SolidBrush trBr = new SolidBrush(Theme.Track))
                 g.FillPath(trBr, tr);
 
@@ -818,9 +827,9 @@ namespace CodexUsageMonitor
             {
                 float p = (float)Math.Max(0.0, Math.Min(100.0, pct.Value));
                 float fw = barW * p / 100f;
-                if (fw >= 2.5f)
+                if (fw >= barR)
                 {
-                    using (GraphicsPath fg = Renderer.RoundedRect(new RectangleF(barX, barY, fw, barH), 2.5f))
+                    using (GraphicsPath fg = Renderer.RoundedRect(new RectangleF(barX, barY, fw, barH), barR))
                     using (SolidBrush fgBr = new SolidBrush(c))
                         g.FillPath(fgBr, fg);
                 }
@@ -830,7 +839,7 @@ namespace CodexUsageMonitor
             using (SolidBrush valBr = new SolidBrush(c))
             using (StringFormat sfRight = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
             {
-                g.DrawString(val, _fVal, valBr, new RectangleF(98, y, width - 104, h), sfRight);
+                g.DrawString(val, _fVal, valBr, new RectangleF(98f * s, y, Math.Max(20f, width - 104f * s), h), sfRight);
             }
         }
 

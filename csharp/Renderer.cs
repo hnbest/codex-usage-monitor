@@ -27,6 +27,53 @@ namespace CodexUsageMonitor
         [DllImport("user32.dll")]
         private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll")]
+        private static extern int GetDeviceCaps(IntPtr hdc, int nIndex);
+
+        private const int LOGPIXELSX = 88;
+        private static float _dpiScale;
+
+        public static float DpiScale
+        {
+            get
+            {
+                if (_dpiScale <= 0f) _dpiScale = ReadSystemDpiScale();
+                return _dpiScale;
+            }
+        }
+
+        public static int ScaleDpi(int px)
+        {
+            return (int)Math.Round(px * DpiScale);
+        }
+
+        private static float ReadSystemDpiScale()
+        {
+            IntPtr dc = IntPtr.Zero;
+            try
+            {
+                dc = GetDC(IntPtr.Zero);
+                if (dc != IntPtr.Zero)
+                {
+                    int dpi = GetDeviceCaps(dc, LOGPIXELSX);
+                    if (dpi >= 96 && dpi <= 480)
+                        return dpi / 96f;
+                }
+            }
+            catch { }
+            finally
+            {
+                if (dc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, dc);
+            }
+            return 1f;
+        }
+
         public static void SetTopMost(IntPtr hwnd)
         {
             try
@@ -44,6 +91,7 @@ namespace CodexUsageMonitor
             {
                 try { SetProcessDPIAware(); } catch { }
             }
+            _dpiScale = ReadSystemDpiScale();
         }
 
         public static void ApplyRoundCorners(IntPtr hwnd)
@@ -95,13 +143,14 @@ namespace CodexUsageMonitor
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-            float pad = ringWidth / 2f + 2f;
+            float geomScale = Math.Max(0.5f, bounds.Width / 98f);
+            float pad = ringWidth / 2f + 2f * geomScale;
             RectangleF box = new RectangleF(
                 bounds.X + pad, bounds.Y + pad,
                 bounds.Width - pad * 2f, bounds.Height - pad * 2f);
 
             // 1. 环内油箱动态液位填充 (双层错相正弦波浪, 表示距离重置的剩余时间比例)
-            float innerGap = ringWidth / 2f + 2.5f;
+            float innerGap = ringWidth / 2f + 2.5f * geomScale;
             RectangleF innerCircle = new RectangleF(
                 box.X + innerGap, box.Y + innerGap,
                 box.Width - innerGap * 2f, box.Height - innerGap * 2f);
@@ -128,12 +177,12 @@ namespace CodexUsageMonitor
 
                             // 接近满或空时自动衰减波幅, 避免贴边穿帮
                             float edgeFactor = Math.Min(1f, Math.Min(tp, 100f - tp) / 10f);
-                            float amp1 = 2.6f * edgeFactor;
-                            float amp2 = 2.0f * edgeFactor;
+                            float amp1 = 2.6f * geomScale * edgeFactor;
+                            float amp2 = 2.0f * geomScale * edgeFactor;
 
                             int steps = 16;
-                            float x0 = innerCircle.Left - 2f;
-                            float x1 = innerCircle.Right + 2f;
+                            float x0 = innerCircle.Left - 2f * geomScale;
+                            float x1 = innerCircle.Right + 2f * geomScale;
                             float span = x1 - x0;
 
                             // 后层浅波 (反向/错相, 营造立体水体层次)
@@ -144,14 +193,14 @@ namespace CodexUsageMonitor
                                 {
                                     float t = (float)i / steps;
                                     float px = x0 + span * t;
-                                    float py = yLevel - 0.6f + (float)Math.Sin(t * Math.PI * 2.0 - wavePhase * 0.85 + 1.8) * amp2;
+                                    float py = yLevel - 0.6f * geomScale + (float)Math.Sin(t * Math.PI * 2.0 - wavePhase * 0.85 + 1.8) * amp2;
                                     backWave[i] = new PointF(px, py);
                                 }
                                 using (GraphicsPath backPath = new GraphicsPath())
                                 {
                                     backPath.AddCurve(backWave, 0.5f);
-                                    backPath.AddLine(x1, backWave[steps].Y, x1, innerCircle.Bottom + 2f);
-                                    backPath.AddLine(x1, innerCircle.Bottom + 2f, x0, innerCircle.Bottom + 2f);
+                                    backPath.AddLine(x1, backWave[steps].Y, x1, innerCircle.Bottom + 2f * geomScale);
+                                    backPath.AddLine(x1, innerCircle.Bottom + 2f * geomScale, x0, innerCircle.Bottom + 2f * geomScale);
                                     backPath.CloseFigure();
                                     using (SolidBrush backBr = new SolidBrush(Color.FromArgb(44, 96, 165, 250)))
                                         g.FillPath(backBr, backPath);
@@ -170,13 +219,13 @@ namespace CodexUsageMonitor
                             using (GraphicsPath liquidPath = new GraphicsPath())
                             {
                                 liquidPath.AddCurve(frontWave, 0.5f);
-                                liquidPath.AddLine(x1, frontWave[steps].Y, x1, innerCircle.Bottom + 2f);
-                                liquidPath.AddLine(x1, innerCircle.Bottom + 2f, x0, innerCircle.Bottom + 2f);
+                                liquidPath.AddLine(x1, frontWave[steps].Y, x1, innerCircle.Bottom + 2f * geomScale);
+                                liquidPath.AddLine(x1, innerCircle.Bottom + 2f * geomScale, x0, innerCircle.Bottom + 2f * geomScale);
                                 liquidPath.CloseFigure();
 
                                 RectangleF gradRect = new RectangleF(
-                                    innerCircle.Left, Math.Max(innerCircle.Top, yLevel - 5f),
-                                    innerCircle.Width, Math.Max(4f, innerCircle.Bottom - yLevel + 8f));
+                                    innerCircle.Left, Math.Max(innerCircle.Top, yLevel - 5f * geomScale),
+                                    innerCircle.Width, Math.Max(4f, innerCircle.Bottom - yLevel + 8f * geomScale));
                                 using (LinearGradientBrush lgb = new LinearGradientBrush(
                                     gradRect,
                                     Color.FromArgb(94, 124, 184, 255),
@@ -189,7 +238,7 @@ namespace CodexUsageMonitor
                                 // 流动液面高光线
                                 if (tp < 98.5f)
                                 {
-                                    using (Pen crestPen = new Pen(Color.FromArgb(160, 178, 220, 255), 1.3f))
+                                    using (Pen crestPen = new Pen(Color.FromArgb(160, 178, 220, 255), 1.3f * geomScale))
                                         g.DrawCurve(crestPen, frontWave, 0.5f);
                                 }
                             }
@@ -362,12 +411,14 @@ namespace CodexUsageMonitor
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            Rectangle r = new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2);
+            int mx = NativeWin.ScaleDpi(2);
+            int my = NativeWin.ScaleDpi(1);
+            Rectangle r = new Rectangle(mx, my, e.Item.Width - mx * 2, e.Item.Height - my * 2);
             if (e.Item.Selected && e.Item.Enabled)
             {
                 SmoothingMode smoothing = e.Graphics.SmoothingMode;
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                using (GraphicsPath path = Renderer.RoundedRect(r, 5))
+                using (GraphicsPath path = Renderer.RoundedRect(r, 5f * NativeWin.DpiScale))
                 using (SolidBrush br = new SolidBrush(Theme.Accent))
                     e.Graphics.FillPath(br, path);
                 e.Graphics.SmoothingMode = smoothing;
@@ -393,8 +444,9 @@ namespace CodexUsageMonitor
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
         {
             int y = e.Item.Height / 2;
-            using (Pen p = new Pen(Theme.Border))
-                e.Graphics.DrawLine(p, 8, y, e.Item.Width - 8, y);
+            int pad = NativeWin.ScaleDpi(8);
+            using (Pen p = new Pen(Theme.Border, Math.Max(1f, NativeWin.DpiScale * 0.6f)))
+                e.Graphics.DrawLine(p, pad, y, e.Item.Width - pad, y);
         }
 
         private class DarkColorTable : ProfessionalColorTable
@@ -426,7 +478,8 @@ namespace CodexUsageMonitor
             SmoothingMode previous = e.Graphics.SmoothingMode;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             RectangleF bounds = new RectangleF(0.5f, 0.5f, ClientSize.Width - 1, ClientSize.Height - 1);
-            using (GraphicsPath path = Renderer.RoundedRect(bounds, 5))
+            float radius = Math.Max(3f, ClientSize.Height * 0.24f);
+            using (GraphicsPath path = Renderer.RoundedRect(bounds, radius))
             using (SolidBrush brush = new SolidBrush(_fill))
                 e.Graphics.FillPath(brush, path);
             e.Graphics.SmoothingMode = previous;
@@ -457,6 +510,7 @@ namespace CodexUsageMonitor
 
     public class RingControl : Control
     {
+        public float LayoutScale { get; set; }
         public float TextScale { get; set; }
         private double? _pct;
         private Color _color = Theme.Track;
@@ -466,10 +520,11 @@ namespace CodexUsageMonitor
 
         public RingControl()
         {
+            LayoutScale = NativeWin.DpiScale;
             TextScale = 1f;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
             BackColor = Theme.Bg;
-            Size = new Size(98, 98);
+            Size = new Size(NativeWin.ScaleDpi(98), NativeWin.ScaleDpi(98));
         }
 
         public bool HasAnimatedLiquid
@@ -502,7 +557,7 @@ namespace CodexUsageMonitor
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            Renderer.DrawRing(e.Graphics, ClientRectangle, _pct, _color, 8f * TextScale, _timePct, _timeText, _wavePhase, TextScale);
+            Renderer.DrawRing(e.Graphics, ClientRectangle, _pct, _color, 8f * LayoutScale, _timePct, _timeText, _wavePhase, TextScale);
         }
     }
 
@@ -515,7 +570,7 @@ namespace CodexUsageMonitor
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
             BackColor = Theme.Card;
-            Size = new Size(138, 7);
+            Size = new Size(NativeWin.ScaleDpi(138), NativeWin.ScaleDpi(7));
         }
 
         public void SetValue(double? pct, Color color)
@@ -529,7 +584,8 @@ namespace CodexUsageMonitor
         {
             base.OnPaint(e);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (GraphicsPath bg = Renderer.RoundedRect(new RectangleF(0, 0, Width - 1, Height - 1), 3f))
+            float r = Math.Max(2f, (Height - 1) / 2f);
+            using (GraphicsPath bg = Renderer.RoundedRect(new RectangleF(0, 0, Width - 1, Height - 1), r))
             using (SolidBrush br = new SolidBrush(Theme.Track))
                 e.Graphics.FillPath(br, bg);
 
@@ -537,9 +593,9 @@ namespace CodexUsageMonitor
             {
                 float p = (float)Math.Max(0.0, Math.Min(100.0, _pct.Value));
                 float w = (Width - 1) * p / 100f;
-                if (w >= 3f)
+                if (w >= r)
                 {
-                    using (GraphicsPath fg = Renderer.RoundedRect(new RectangleF(0, 0, w, Height - 1), 3f))
+                    using (GraphicsPath fg = Renderer.RoundedRect(new RectangleF(0, 0, w, Height - 1), r))
                     using (SolidBrush br = new SolidBrush(_color))
                         e.Graphics.FillPath(br, fg);
                 }

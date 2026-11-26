@@ -101,14 +101,15 @@ namespace CodexUsageMonitor
                 border = ColorTranslator.FromHtml("#313440");
             }
 
-            RectangleF rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            float penW = Math.Max(1f, NativeWin.DpiScale * 0.6f);
+            RectangleF rect = new RectangleF(penW * 0.5f, penW * 0.5f, Width - penW - 0.5f, Height - penW - 0.5f);
             using (GraphicsPath gp = Renderer.RoundedRect(rect, _radius))
             {
                 using (SolidBrush br = new SolidBrush(bg))
                     g.FillPath(br, gp);
                 if (border.HasValue)
                 {
-                    using (Pen pen = new Pen(border.Value, 1f))
+                    using (Pen pen = new Pen(border.Value, penW))
                         g.DrawPath(pen, gp);
                 }
             }
@@ -184,7 +185,7 @@ namespace CodexUsageMonitor
 
         private Font CreateFont(float size, FontStyle style)
         {
-            return new Font("Microsoft YaHei UI", size * _owner.WindowScale, style);
+            return new Font("Microsoft YaHei UI", size * _owner.FontScale, style);
         }
 
         private void DisposeFonts()
@@ -1083,14 +1084,14 @@ namespace CodexUsageMonitor
                     dlg.StartPosition = FormStartPosition.CenterParent;
                     dlg.MaximizeBox = false;
                     dlg.MinimizeBox = false;
-                    dlg.ClientSize = UiSize(280, 102);
+                    dlg.ClientSize = UiSize(280, 108);
                     dlg.BackColor = Theme.Bg;
                     dlg.ForeColor = Theme.Text;
 
                     Label lb = new Label { Text = "显示名称（留空恢复默认邮箱）:", Left = UiPx(14), Top = UiPx(12), AutoSize = true, ForeColor = Theme.Sub, Font = _fSub };
-                    Panel input = new Panel { Location = UiPoint(14, 36), Size = UiSize(252, 24), BackColor = Theme.Card };
-                    TextBox tb = new TextBox { Left = UiPx(6), Top = UiPx(4), Width = UiPx(240), BorderStyle = BorderStyle.None, Text = string.IsNullOrEmpty(acct.Label) ? acct.DisplayName : acct.Label, BackColor = Theme.Card, ForeColor = Theme.Text };
-                    Button okBtn = new Button { Text = "确定", DialogResult = DialogResult.OK, Left = UiPx(190), Top = UiPx(66), Width = UiPx(76), FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, BackColor = Theme.Accent, ForeColor = ColorTranslator.FromHtml("#12141a") };
+                    Panel input = new Panel { Location = UiPoint(14, 36), Size = UiSize(252, 26), BackColor = Theme.Card };
+                    TextBox tb = new TextBox { Left = UiPx(6), Top = UiPx(4), Width = UiPx(240), BorderStyle = BorderStyle.None, Text = string.IsNullOrEmpty(acct.Label) ? acct.DisplayName : acct.Label, BackColor = Theme.Card, ForeColor = Theme.Text, Font = _fSub };
+                    Button okBtn = new Button { Text = "确定", DialogResult = DialogResult.OK, Left = UiPx(190), Top = UiPx(70), Size = UiSize(76, 26), FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, BackColor = Theme.Accent, ForeColor = ColorTranslator.FromHtml("#12141a"), Font = _fSub };
                     okBtn.FlatAppearance.BorderSize = 0;
                     Renderer.RoundControl(input, UiPx(6));
                     Renderer.RoundControl(okBtn, UiPx(6));
@@ -1120,12 +1121,13 @@ namespace CodexUsageMonitor
             _inner.Height = _body.Bottom + UiPx(2);
             Rectangle area = Screen.FromControl(_owner).WorkingArea;
             _owner.FitPopup(this, _inner, area);
-            int x = Math.Min(Math.Max(area.Left + 8, _owner.Left - 12), Math.Max(area.Left + 8, area.Right - Width - 8));
-            int y = _owner.Top - Height - 8;
-            if (y < area.Top + 8)
-                y = Math.Min(area.Bottom - Height - 8, _owner.Bottom + 8);
-            if (y < area.Top + 8)
-                y = area.Top + Math.Max(8, (area.Height - Height) / 2);
+            int pad = _owner.DpiPx(8);
+            int x = Math.Min(Math.Max(area.Left + pad, _owner.Left - _owner.DpiPx(12)), Math.Max(area.Left + pad, area.Right - Width - pad));
+            int y = _owner.Top - Height - pad;
+            if (y < area.Top + pad)
+                y = Math.Min(area.Bottom - Height - pad, _owner.Bottom + pad);
+            if (y < area.Top + pad)
+                y = area.Top + Math.Max(pad, (area.Height - Height) / 2);
             Location = new Point(x, y);
         }
 

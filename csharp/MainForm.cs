@@ -117,8 +117,11 @@ namespace CodexUsageMonitor
                 }
             }
         }
-        internal float WindowScale { get { return Fonts.Scale; } }
+        internal float DpiScale { get { return NativeWin.DpiScale; } }
+        internal float FontScale { get { return Fonts.Scale; } }
+        internal float WindowScale { get { return DpiScale * FontScale; } }
 
+        internal int DpiPx(int value) { return (int)Math.Round(value * DpiScale); }
         internal int UiPx(int value) { return (int)Math.Round(value * WindowScale); }
         internal Point UiPoint(int x, int y) { return new Point(UiPx(x), UiPx(y)); }
         internal Size UiSize(int width, int height) { return new Size(UiPx(width), UiPx(height)); }
@@ -149,6 +152,7 @@ namespace CodexUsageMonitor
 
             Text = "Codex 用量";
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
             TopMost = true;
             ShowInTaskbar = false;
@@ -157,7 +161,7 @@ namespace CodexUsageMonitor
             Opacity = Math.Max(0.4, Math.Min(1.0, Config.alpha));
             Width = UiPx(WindowWidth);
             Rectangle area = Screen.PrimaryScreen.WorkingArea;
-            int x = Config.window_x ?? (area.Right - Width - 16);
+            int x = Config.window_x ?? (area.Right - Width - DpiPx(16));
             int y = Config.window_y ?? (area.Top + Math.Max(0, (area.Height - UiPx(210)) / 2));
             Location = new Point(x, y);
 
@@ -187,8 +191,8 @@ namespace CodexUsageMonitor
                 NativeWin.ApplyRoundCorners(Handle);
                 ClampToScreen();
                 Rectangle wa = Screen.FromControl(this).WorkingArea;
-                Logger.Log(string.Format("窗口就绪: Loc=({0},{1}) Size=({2}x{3}) Vis={4} Opacity={5} WA=({6},{7},{8}x{9})",
-                    Left, Top, Width, Height, Visible, Opacity, wa.Left, wa.Top, wa.Width, wa.Height));
+                Logger.Log(string.Format("窗口就绪: Loc=({0},{1}) Size=({2}x{3}) DPI={4:0.##}x Scale={5:0.##}x Vis={6} Opacity={7} WA=({8},{9},{10}x{11})",
+                    Left, Top, Width, Height, DpiScale, WindowScale, Visible, Opacity, wa.Left, wa.Top, wa.Width, wa.Height));
                 _taskbarWidget = new TaskbarWidgetForm(this);
                 _taskbarWidget.VisibleChanged += delegate { UpdateTrayVisibility(); };
                 _taskbarWidget.SetEnabled(Config.show_in_taskbar);
@@ -669,7 +673,7 @@ namespace CodexUsageMonitor
         private void ResetPosition()
         {
             Rectangle area = Screen.PrimaryScreen.WorkingArea;
-            int x = Math.Max(area.Left, area.Right - Width - 16);
+            int x = Math.Max(area.Left, area.Right - Width - DpiPx(16));
             int y = area.Top + Math.Max(0, (area.Height - Height) / 2);
             Location = new Point(x, y);
             Config.window_x = x;
@@ -842,7 +846,7 @@ namespace CodexUsageMonitor
             _inner.Controls.Add(_cardsHost);
 
             // ---- 分隔线 + 底部栏 ----
-            Panel sep = new Panel { Name = "sep", BackColor = Theme.Border, Height = 1, Width = UiPx(WindowWidth - 30), Left = UiPx(14) };
+            Panel sep = new Panel { Name = "sep", BackColor = Theme.Border, Height = Math.Max(1, DpiPx(1)), Width = UiPx(WindowWidth - 30), Left = UiPx(14) };
             _inner.Controls.Add(sep);
 
             Panel foot = new Panel { Name = "foot", BackColor = Theme.Bg, Height = UiPx(26), Width = UiPx(WindowWidth - 2), Padding = UiPadding(14, 4, 14, 4) };
@@ -1203,8 +1207,8 @@ namespace CodexUsageMonitor
 
                 int half = (WindowWidth - 2) / 2;
                 int ringSize = 98;
-                _ringP = new RingControl { Location = UiPoint((half - ringSize) / 2, 4), TextScale = WindowScale, Size = UiSize(ringSize, ringSize) };
-                _ringS = new RingControl { Location = UiPoint(half + (half - ringSize) / 2, 4), TextScale = WindowScale, Size = UiSize(ringSize, ringSize) };
+                _ringP = new RingControl { Location = UiPoint((half - ringSize) / 2, 4), LayoutScale = WindowScale, TextScale = FontScale, Size = UiSize(ringSize, ringSize) };
+                _ringS = new RingControl { Location = UiPoint(half + (half - ringSize) / 2, 4), LayoutScale = WindowScale, TextScale = FontScale, Size = UiSize(ringSize, ringSize) };
                 _ringS.SetInitialPhase(2.1f);
 
                 Label capP = new PeriodBadge(ColorTranslator.FromHtml("#234C78"))
@@ -1375,7 +1379,7 @@ namespace CodexUsageMonitor
             menu.BackColor = Theme.Card;
             menu.ForeColor = Theme.Text;
             menu.Font = _smallFonts.Sub;
-            Renderer.RoundControl(menu, 8);
+            Renderer.RoundControl(menu, DpiPx(8));
 
             ToolStripMenuItem cliHead = new ToolStripMenuItem("● 当前 CLI: " + LiveAccountName());
             cliHead.Enabled = false;
@@ -1404,8 +1408,8 @@ namespace CodexUsageMonitor
                 subView.DropDown.Opened += delegate { NativeWin.SetTopMost(subView.DropDown.Handle); };
                 ToolStripMenuItem subCli = new ToolStripMenuItem("切换为 CLI 账号");
                 subCli.DropDown.Opened += delegate { NativeWin.SetTopMost(subCli.DropDown.Handle); };
-                Renderer.RoundControl(subView.DropDown, 8);
-                Renderer.RoundControl(subCli.DropDown, 8);
+                Renderer.RoundControl(subView.DropDown, DpiPx(8));
+                Renderer.RoundControl(subCli.DropDown, DpiPx(8));
                 foreach (AccountInfo a in Accounts)
                 {
                     AccountInfo acct = a;
@@ -1522,21 +1526,22 @@ namespace CodexUsageMonitor
 
             Form w = new Form();
             _switcherWin = w;
+            w.AutoScaleMode = AutoScaleMode.None;
+            w.AutoScroll = true;
             w.FormBorderStyle = FormBorderStyle.None;
             w.TopMost = true;
             w.ShowInTaskbar = false;
             w.Opacity = 0.98;
             w.BackColor = Theme.Border;
             w.StartPosition = FormStartPosition.Manual;
-            w.Width = 316;
             w.KeyPreview = true;
             w.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) w.Close(); };
             w.Deactivate += delegate { try { if (!w.IsDisposed) w.Close(); } catch { } };
 
-            Panel inner = new Panel { BackColor = Theme.Bg, Location = new Point(1, 1), Width = 314 };
+            Panel inner = new Panel { BackColor = Theme.Bg, Location = UiPoint(1, 1), Width = UiPx(314) };
             w.Controls.Add(inner);
 
-            Label head = new Label { Text = "点击查看详情（实时余量）", ForeColor = Theme.Sub, Font = _smallFonts.Tiny, Location = new Point(10, 7), AutoSize = true };
+            Label head = new Label { Text = "点击查看详情（实时余量）", ForeColor = Theme.Sub, Font = Fonts.Tiny, Location = UiPoint(10, 7), AutoSize = true };
             inner.Controls.Add(head);
 
             int y = 26;
@@ -1545,7 +1550,7 @@ namespace CodexUsageMonitor
                 AccountInfo acct = a;
                 bool cur = ViewAccount != null && acct.Uid == ViewAccount.Uid;
                 Color baseBg = cur ? Theme.Card : Theme.Bg;
-                Panel row = new Panel { BackColor = baseBg, Location = new Point(6, y), Size = new Size(302, 26), Cursor = Cursors.Hand };
+                Panel row = new Panel { BackColor = baseBg, Location = UiPoint(6, y), Size = UiSize(302, 26), Cursor = Cursors.Hand };
 
                 string cliMark = acct.Live ? " ·CLI" : (acct.IsAgyLocal ? " ·本机" : "");
                 Label lbl = new Label
@@ -1553,9 +1558,9 @@ namespace CodexUsageMonitor
                     Text = string.Format("{0} [{1}] {2}{3}", cur ? "✓" : "○", acct.ProviderTag, FormatUtil.Ellipsize(acct.DisplayName, 16), cliMark),
                     ForeColor = cur ? Theme.Accent : Theme.Text,
                     BackColor = baseBg,
-                    Font = _smallFonts.Sub,
+                    Font = Fonts.Sub,
                     AutoSize = true,
-                    Location = new Point(6, 5),
+                    Location = UiPoint(6, 5),
                     Cursor = Cursors.Hand
                 };
 
@@ -1607,11 +1612,11 @@ namespace CodexUsageMonitor
                     Text = tagTxt,
                     ForeColor = tagFg,
                     BackColor = baseBg,
-                    Font = _smallFonts.Tiny,
+                    Font = Fonts.Tiny,
                     AutoSize = false,
                     TextAlign = ContentAlignment.MiddleRight,
-                    Size = new Size(116, 20),
-                    Location = new Point(180, 3),
+                    Size = UiSize(116, 20),
+                    Location = UiPoint(180, 3),
                     Cursor = Cursors.Hand
                 };
 
@@ -1626,19 +1631,20 @@ namespace CodexUsageMonitor
                 row.MouseEnter += enter; lbl.MouseEnter += enter; tag.MouseEnter += enter;
                 row.MouseLeave += leave; lbl.MouseLeave += leave; tag.MouseLeave += leave;
 
-                Renderer.RoundControl(row, 6);
+                Renderer.RoundControl(row, UiPx(6));
                 row.Controls.Add(lbl);
                 row.Controls.Add(tag);
                 inner.Controls.Add(row);
                 y += 28;
             }
 
-            inner.Height = y + 6;
-            w.Height = inner.Height + 2;
+            inner.Height = UiPx(y + 6);
             Rectangle area = Screen.FromControl(this).WorkingArea;
-            int sx = Math.Min(Left + 10, area.Right - w.Width - 8);
-            int sy = Top + 38;
-            if (sy + w.Height > area.Bottom - 8) sy = Math.Max(area.Top + 4, Top - w.Height - 4);
+            FitPopup(w, inner, area);
+            int pad = DpiPx(8);
+            int sx = Math.Min(Math.Max(area.Left + pad, Left + UiPx(10)), Math.Max(area.Left + pad, area.Right - w.Width - pad));
+            int sy = Top + UiPx(38);
+            if (sy + w.Height > area.Bottom - pad) sy = Math.Max(area.Top + pad, Top - w.Height - DpiPx(4));
             w.Location = new Point(sx, sy);
             w.Load += delegate { NativeWin.ApplyRoundCorners(w.Handle); };
             w.Show(this);
@@ -1831,10 +1837,11 @@ namespace CodexUsageMonitor
             inner.Height = UiPx(y);
             Rectangle area = Screen.FromControl(this).WorkingArea;
             FitPopup(w, inner, area);
-            int sx = Math.Min(Math.Max(area.Left + 8, Left + UiPx(12)), Math.Max(area.Left + 8, area.Right - w.Width - 8));
+            int pad = DpiPx(8);
+            int sx = Math.Min(Math.Max(area.Left + pad, Left + UiPx(12)), Math.Max(area.Left + pad, area.Right - w.Width - pad));
             int sy = Bottom + UiPx(6);
-            if (sy + w.Height > area.Bottom - 8)
-                sy = Math.Max(area.Top + 8, Top - w.Height - UiPx(6));
+            if (sy + w.Height > area.Bottom - pad)
+                sy = Math.Max(area.Top + pad, Top - w.Height - UiPx(6));
             w.Location = new Point(sx, sy);
         }
 
@@ -1891,8 +1898,9 @@ namespace CodexUsageMonitor
 
         internal void FitPopup(Form popup, Control content, Rectangle workingArea)
         {
-            int maxHeight = workingArea.Height - 16;
-            int maxWidth = workingArea.Width - 16;
+            int margin = DpiPx(16);
+            int maxHeight = Math.Max(DpiPx(120), workingArea.Height - margin);
+            int maxWidth = Math.Max(DpiPx(160), workingArea.Width - margin);
             int height = content.Height + UiPx(2);
             int width = content.Width + UiPx(2);
             if (height > maxHeight) width += SystemInformation.VerticalScrollBarWidth;
